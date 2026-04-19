@@ -148,6 +148,11 @@ export interface ChatCompletionsPayload {
     | { type: "function"; function: { name: string } }
     | null
   user?: string | null
+
+  // GitHub Copilot CAPI extension for Anthropic models (mirrors vscode-copilot-chat
+  // IEndpointBody.thinking_budget). Flat top-level integer; Copilot's broker
+  // forwards it as Anthropic's `thinking.budget_tokens` upstream.
+  thinking_budget?: number | null
 }
 
 export interface Tool {

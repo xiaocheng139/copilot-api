@@ -326,6 +326,44 @@ You can find more options here: [Claude Code settings](https://docs.anthropic.co
 
 You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
 
+### Extended Thinking (Claude models)
+
+This fork forwards Claude's extended-thinking budget through to Copilot's broker so Claude Code can request deeper reasoning. The translator reads `thinking.budget_tokens` from the incoming Anthropic request and emits `thinking_budget` on the outgoing Copilot ChatCompletions body — the same flat field that VS Code Copilot Chat uses.
+
+Set the budget via the `MAX_THINKING_TOKENS` env var when launching Claude Code:
+
+```sh
+MAX_THINKING_TOKENS=10000 claude
+```
+
+Or persist it in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "MAX_THINKING_TOKENS": "10000"
+  }
+}
+```
+
+Notes:
+
+- The value is a **fixed budget per request**, not a ceiling. Every request burns up to that many thinking tokens, including trivial prompts — pick a value that matches your typical workload.
+- The budget is clamped to `max_tokens - 1` to satisfy Anthropic's invariant; per-model min/max clamping happens on Copilot's side.
+- When `thinking` is enabled, `temperature` and `top_p` are dropped from the outgoing payload (Anthropic forbids them with extended thinking).
+- Only Claude models on the ChatCompletions path are affected. The `effort: low|medium|high` parameter (Messages API / Responses API) is **not** forwarded — Copilot's CAPI broker doesn't accept it.
+- Run with `--verbose` to see `thinking_budget` in the translated payload log line.
+
+To dial the budget per-session, use shell aliases:
+
+```sh
+alias cc='claude'                                  # model default
+alias cct='MAX_THINKING_TOKENS=10000 claude'       # think
+alias ccu='MAX_THINKING_TOKENS=31999 claude'       # ultrathink
+```
+
 ## Running from Source
 
 The project can be run from source in several ways:

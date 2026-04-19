@@ -29,6 +29,12 @@ import { mapOpenAIStopReasonToAnthropic } from "./utils"
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
 ): ChatCompletionsPayload {
+  const thinkingBudget =
+    payload.thinking?.type === "enabled" ?
+      resolveThinkingBudget(payload.thinking.budget_tokens, payload.max_tokens)
+    : undefined
+  const thinkingOn = thinkingBudget !== undefined
+
   return {
     model: translateModelName(payload.model),
     messages: translateAnthropicMessagesToOpenAI(
@@ -38,12 +44,28 @@ export function translateToOpenAI(
     max_tokens: payload.max_tokens,
     stop: payload.stop_sequences,
     stream: payload.stream,
-    temperature: payload.temperature,
-    top_p: payload.top_p,
+    // Anthropic forbids temperature/top_p when extended thinking is on; Copilot's
+    // broker mirrors that constraint, so drop them when forwarding a budget.
+    temperature: thinkingOn ? undefined : payload.temperature,
+    top_p: thinkingOn ? undefined : payload.top_p,
     user: payload.metadata?.user_id,
     tools: translateAnthropicToolsToOpenAI(payload.tools),
     tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
+    ...(thinkingOn && { thinking_budget: thinkingBudget }),
   }
+}
+
+// vscode-copilot-chat clamps the budget to [min, maxBudget, max_tokens-1].
+// We don't know the per-model min/max here, so we only enforce the max_tokens-1
+// invariant Anthropic requires (budget < max_tokens). Copilot's broker handles
+// per-model clamping on its side.
+function resolveThinkingBudget(
+  requested: number | undefined,
+  maxTokens: number,
+): number | undefined {
+  if (requested === undefined || requested <= 0) return undefined
+  const ceiling = Math.max(1, maxTokens - 1)
+  return Math.min(requested, ceiling)
 }
 
 function translateModelName(model: string): string {
