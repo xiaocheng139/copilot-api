@@ -2,10 +2,14 @@ import { describe, expect, test } from "bun:test"
 
 import type {
   AnthropicMessage,
+  AnthropicMessagesPayload,
   AnthropicUserMessage,
 } from "~/routes/messages/anthropic-types"
 
-import { detectKeywordBudget } from "../src/routes/messages/non-stream-translation"
+import {
+  detectKeywordBudget,
+  translateToOpenAI,
+} from "../src/routes/messages/non-stream-translation"
 
 const userText = (text: string): AnthropicUserMessage => ({
   role: "user",
@@ -172,5 +176,89 @@ describe("detectKeywordBudget", () => {
   test("trigger outside code block still fires when other text is fenced", () => {
     const text = "ultrathink this:\n```\njust some code\n```\n"
     expect(detectKeywordBudget([userText(text)])).toBe(31999)
+  })
+})
+
+const buildPayload = (
+  overrides: Partial<AnthropicMessagesPayload> = {},
+): AnthropicMessagesPayload => ({
+  model: "claude-sonnet-4",
+  max_tokens: 64000,
+  messages: [userText("hello")],
+  ...overrides,
+})
+
+describe("translateToOpenAI thinking budget", () => {
+  test("no keyword, no payload thinking → no thinking_budget", () => {
+    const out = translateToOpenAI(buildPayload())
+    expect(out.thinking_budget).toBeUndefined()
+  })
+
+  test("keyword only → uses keyword budget", () => {
+    const out = translateToOpenAI(
+      buildPayload({ messages: [userText("ultrathink: refactor")] }),
+    )
+    expect(out.thinking_budget).toBe(31999)
+    expect(out.temperature).toBeUndefined()
+    expect(out.top_p).toBeUndefined()
+  })
+
+  test("payload only → uses payload budget", () => {
+    const out = translateToOpenAI(
+      buildPayload({
+        thinking: { type: "enabled", budget_tokens: 8000 },
+      }),
+    )
+    expect(out.thinking_budget).toBe(8000)
+  })
+
+  test("floor: keyword < payload → payload wins", () => {
+    const out = translateToOpenAI(
+      buildPayload({
+        messages: [userText("think about it")],
+        thinking: { type: "enabled", budget_tokens: 10000 },
+      }),
+    )
+    expect(out.thinking_budget).toBe(10000)
+  })
+
+  test("floor: keyword > payload → keyword wins", () => {
+    const out = translateToOpenAI(
+      buildPayload({
+        messages: [userText("ultrathink the bug")],
+        thinking: { type: "enabled", budget_tokens: 4000 },
+      }),
+    )
+    expect(out.thinking_budget).toBe(31999)
+  })
+
+  test("max_tokens clamps the budget", () => {
+    const out = translateToOpenAI(
+      buildPayload({
+        max_tokens: 500,
+        messages: [userText("ultrathink")],
+      }),
+    )
+    expect(out.thinking_budget).toBe(499)
+  })
+
+  test("thinking on drops temperature and top_p", () => {
+    const out = translateToOpenAI(
+      buildPayload({
+        messages: [userText("ultrathink")],
+        temperature: 0.7,
+        top_p: 0.9,
+      }),
+    )
+    expect(out.temperature).toBeUndefined()
+    expect(out.top_p).toBeUndefined()
+  })
+
+  test("no thinking → temperature and top_p preserved", () => {
+    const out = translateToOpenAI(
+      buildPayload({ temperature: 0.7, top_p: 0.9 }),
+    )
+    expect(out.temperature).toBe(0.7)
+    expect(out.top_p).toBe(0.9)
   })
 })

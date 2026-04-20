@@ -29,10 +29,23 @@ import { mapOpenAIStopReasonToAnthropic } from "./utils"
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
 ): ChatCompletionsPayload {
-  const thinkingBudget =
+  const keywordBudget = detectKeywordBudget(payload.messages)
+  const payloadBudget =
     payload.thinking?.type === "enabled" ?
-      resolveThinkingBudget(payload.thinking.budget_tokens, payload.max_tokens)
+      payload.thinking.budget_tokens
     : undefined
+
+  // Floor semantics: keyword can raise an explicit MAX_THINKING_TOKENS
+  // budget but must never silently lower it.
+  const requestedBudget =
+    keywordBudget !== undefined && payloadBudget !== undefined ?
+      Math.max(keywordBudget, payloadBudget)
+    : (keywordBudget ?? payloadBudget)
+
+  const thinkingBudget = resolveThinkingBudget(
+    requestedBudget,
+    payload.max_tokens,
+  )
   const thinkingOn = thinkingBudget !== undefined
 
   return {
