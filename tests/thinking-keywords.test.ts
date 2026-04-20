@@ -74,4 +74,86 @@ describe("detectKeywordBudget", () => {
     ]
     expect(detectKeywordBudget(messages)).toBeUndefined()
   })
+
+  test("walks back past image-only user turn", () => {
+    const messages: Array<AnthropicMessage> = [
+      userText("ultrathink the bug"),
+      { role: "assistant", content: "ok" },
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: "abc",
+            },
+          },
+        ],
+      },
+    ]
+    expect(detectKeywordBudget(messages)).toBe(31999)
+  })
+
+  test("walks back past tool_result-only user turn", () => {
+    const messages: Array<AnthropicMessage> = [
+      userText("ultrathink the refactor"),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "tool_1",
+            name: "read",
+            input: { path: "x" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool_1",
+            content: "file contents",
+          },
+        ],
+      },
+    ]
+    expect(detectKeywordBudget(messages)).toBe(31999)
+  })
+
+  test("sticky across multi-step tool loop", () => {
+    const messages: Array<AnthropicMessage> = [
+      userText("ultrathink: implement feature X"),
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "read", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "..." }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t2", name: "edit", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t2", content: "ok" }],
+      },
+    ]
+    expect(detectKeywordBudget(messages)).toBe(31999)
+  })
+
+  test("all user turns are tool_result/image only → undefined", () => {
+    const messages: Array<AnthropicMessage> = [
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }],
+      },
+    ]
+    expect(detectKeywordBudget(messages)).toBeUndefined()
+  })
 })
