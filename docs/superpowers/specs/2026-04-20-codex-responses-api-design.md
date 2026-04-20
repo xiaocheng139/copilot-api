@@ -1,338 +1,241 @@
 # `/v1/responses` for Codex CLI
 
-**Status:** Approved
+**Status:** Draft
 **Date:** 2026-04-20
 **Issue:** https://github.com/xiaocheng139/copilot-api/issues/1
 
 ## Goal
 
-Add an OpenAI Responses-API-compatible endpoint at `/v1/responses` so Codex
-CLI (v0.87+) can talk to this proxy the same way Claude Code talks to
-`/v1/messages`. Both clients should be runnable in parallel against a single
-proxy instance, each on its own native wire format, with all upstream
-traffic continuing to flow through GitHub Copilot's `chat/completions`
-broker.
+Let Codex CLI use this proxy at the same time Claude Code already does,
+against a single instance, each on its native wire format. Both clients
+route through Copilot's `chat/completions` broker upstream.
 
-The first cut translates Codex Responses-API requests into Copilot's
-`chat/completions` shape (the same shape `/v1/messages` already uses) and
-back-translates the streaming chat-completion deltas into a synthetic
-Responses-API SSE event stream. Per-route isolation of `--rate-limit`,
-`--manual`, and `MAX_THINKING_TOKENS`, and the upstream Responses-API client
-needed to preserve `reasoning.effort` for GPT-5 / o-series models, are
-deferred to TASKS.md.
+Add `/v1/responses` that translates to/from `chat/completions`,
+mirroring the existing `src/routes/messages/` translator.
 
 ## Background
 
-Codex CLI exclusively uses OpenAI's Responses API on its model path —
-`build_responses_request` in `codex-rs/core/src/client.rs` always sets
-`stream: true` and posts to `/v1/responses`. The Responses API differs from
-chat-completions in three substantive ways:
-
-1. **Request shape.** Top-level `instructions` (system prompt), an `input[]`
-   array of mixed item types (`message`, `function_call`,
-   `function_call_output`, `reasoning`, `custom_tool_call*`), flat tool
-   definitions (`{type, name, description, strict, parameters}` rather than
-   `{type: "function", function: {…}}`), and a `reasoning: {effort, summary}`
-   block.
-2. **Streaming protocol.** The client reconstructs the assistant turn from
-   `response.output_item.done` events; `response.completed` is the only
-   required terminator; `response.output_text.delta` is cosmetic.
-3. **Reasoning.** `reasoning.effort` is a string enum
-   (`"minimal"|"low"|"medium"|"high"`) rather than the numeric
-   `thinking_budget` we already forward for Claude.
-
-The repo already has the translation pattern we need (`src/routes/messages/`
-maps Anthropic Messages → chat-completions and back). We mirror it.
+Codex CLI v0.87+ only speaks the OpenAI Responses API
+(`build_responses_request` in `codex-rs/core/src/client.rs` always posts
+to `/v1/responses` with `stream: true`). Copilot's broker doesn't speak
+Responses, so we translate down to `chat/completions` going up and
+synthesize Responses SSE events coming back.
 
 ## Architecture
 
-New directory `src/routes/responses/`:
+New `src/routes/responses/` mirroring `src/routes/messages/`:
 
 | File | Responsibility |
 |---|---|
-| `route.ts` | Hono route definition; wires path + handler. |
-| `handler.ts` | Orchestrates: parse payload, translate request, await `--manual`/`--rate-limit`, call `createChatCompletions`, stream or buffer the response, translate to Responses-API SSE. |
-| `responses-types.ts` | TypeScript types for the incoming Codex Responses-API payload (`ResponsesRequest`, `ResponsesInputItem`, `ResponsesTool`, etc.). Single source of truth for the wire shape. |
-| `request-translation.ts` | Pure translator: `ResponsesRequest` → `ChatCompletionsPayload`. |
-| `stream-translation.ts` | State machine that consumes chat-completion SSE chunks and emits Responses-API SSE events. |
+| `route.ts` | Hono route. |
+| `handler.ts` | Parses payload, calls translator, awaits `--manual` / `--rate-limit`, calls `createChatCompletions`, streams via `streamSSE`. |
+| `responses-types.ts` | Incoming Responses payload types. |
+| `request-translation.ts` | `ResponsesRequest → ChatCompletionsPayload`. |
+| `stream-translation.ts` | Chat-completions SSE chunks → Responses SSE events. |
 
-Mounted in `src/server.ts` at both `/responses` and `/v1/responses`,
-matching the existing dual-mount convention. Anthropic stays on
-`/v1/messages` only (clients always use the `/v1/` prefix there); we follow
-the same convention for the OpenAI-compatible Responses path so Codex's
-default base URL (`http://host:port/v1`) just works.
-
-The handler reuses `createChatCompletions`, `awaitApproval`,
-`checkRateLimit`, the `state` singleton, and the existing `streamSSE`
-helper. No new auth, header, or upstream-client code is needed for the
-first cut.
+Mounted at `/responses` and `/v1/responses`. Reuses
+`createChatCompletions`, `awaitApproval`, `checkRateLimit`, `state`,
+`streamSSE`.
 
 ## Request translation
 
-`request-translation.ts` exports `translateResponsesToChatCompletions`. It
-converts Codex's Responses-API payload into the chat-completions shape
-already expected by `services/copilot/create-chat-completions.ts`.
-
-### Top-level fields
-
-| Codex Responses field | Chat-completions destination |
+| Codex field | Chat-completions destination |
 |---|---|
-| `model` | `model` (verbatim; `translateModelName` from `messages/non-stream-translation.ts` is **not** applied — Codex sends real GitHub-Copilot model IDs already) |
-| `instructions` | Prepended as a `{role: "system", content: instructions}` message |
-| `input[]` | Translated item-by-item into `messages[]` (see below) |
-| `tools[]` | Wrapped from flat `{type: "function", name, …}` into nested `{type: "function", function: {name, description, parameters}}`. Non-`function` types (`custom`, `local_shell`, `web_search`) are dropped with a single verbose-log warning per request. |
-| `tool_choice` | Forwarded verbatim when it's `"auto"` / `"required"` / `"none"`; the `{type: "function", name}` form is rewrapped into `{type: "function", function: {name}}`. |
-| `parallel_tool_calls` | Forwarded as `parallel_tool_calls`. |
-| `reasoning.effort` | Translated to `thinking_budget` for Claude models only (see below). For non-Claude models the field is dropped and a verbose-log warning notes the limitation. |
-| `max_output_tokens` | Mapped to `max_tokens`. |
-| `metadata.user_id` | Forwarded as `user`. |
-| `temperature`, `top_p` | Forwarded verbatim, subject to the existing thinking-on drop rule. |
-| `stream` | Forwarded; Codex always sends `true`. The handler's stream/non-stream branch keys off this. |
+| `model` | `model` (verbatim) |
+| `instructions` | `{role: "system", content: instructions}` prepended |
+| `input[]` | `messages[]` (see below) |
+| `tools[]` | Lowered to function tools (see "Tools") |
+| `tool_choice` | Forwarded; see "Tools" |
+| `parallel_tool_calls` | Forwarded |
+| `reasoning.effort` | Mapped to `thinking_budget` for Claude (see "Reasoning") |
+| `max_output_tokens` | `max_tokens` |
+| `temperature`, `top_p` | Forwarded (subject to thinking-on drop rule) |
+| `metadata.user_id` | `user` |
+| `stream` | Forwarded |
 
-Dropped on the floor (Responses-API-only fields with no chat-completions
-analogue, none required by Copilot's broker): `store`, `include`,
-`service_tier`, `prompt_cache_key`, `safety_identifier`, `client_metadata`,
-`text` (output-format hints), `reasoning.summary`, `reasoning.encrypted_content`,
-`previous_response_id`, `truncation`, `background`. A single verbose-log
-line lists which of these fields were present and dropped, for debugging.
+`previous_response_id`, `store: true`, `background: true` → `400
+unsupported_responses_field`. We don't store responses; silently
+dropping these would lose continuation context.
+
+Other unenumerated keys are dropped with a verbose log.
 
 ### `input[]` → `messages[]`
 
-Codex's `input[]` is a heterogeneous array. We map each item type:
-
-| Codex item type | Chat-completions message |
+| Codex item | Message |
 |---|---|
-| `{type: "message", role, content: [{type: "input_text"\|"output_text"\|"input_image", …}]}` | `{role, content}` where multi-part text becomes a joined string and `input_image` becomes a `{type: "image_url", image_url: {url}}` part (matching the existing image handling in `messages/non-stream-translation.ts`). |
-| `{type: "function_call", call_id, name, arguments}` | Appended as / merged into a preceding `{role: "assistant", tool_calls: [{id: call_id, type: "function", function: {name, arguments}}]}`. Adjacent function-call items addressed to the same assistant turn are coalesced into one message's `tool_calls[]`. |
-| `{type: "function_call_output", call_id, output}` | `{role: "tool", tool_call_id: call_id, content: output}` (output stringified if not already a string). |
-| `{type: "reasoning", …}` | **Dropped.** Copilot's chat-completions broker does not accept reasoning items in the message log. |
-| `{type: "custom_tool_call"\|"custom_tool_call_output"\|"local_shell_call"\|"local_shell_call_output"\|"web_search_call"}` | **Dropped** with one verbose-log warning per request type. These tool families are deferred. |
+| `{type: "message", role, content: [...]}` | `{role, content}`. `input_text`/`output_text` join as text; `input_image` → `{type: "image_url", image_url: {url}}` (same as `messages/non-stream-translation.ts`) |
+| `{type: "function_call", call_id, name, arguments}` | Coalesced into `{role: "assistant", tool_calls: [...]}` |
+| `{type: "function_call_output", call_id, output}` | `{role: "tool", tool_call_id: call_id, content: output}` |
+| `{type: "local_shell_call", call_id, action}` | Function-tool call named `__cp_local_shell` with `arguments = JSON.stringify(action)` |
+| `{type: "local_shell_call_output", …}` | Same as `function_call_output` |
+| `{type: "custom_tool_call", call_id, name, input}` | Function-tool call using the synthetic id minted for the matching `custom` tool, `arguments = JSON.stringify({input})` |
+| `{type: "custom_tool_call_output", …}` | Same as `function_call_output` |
+| `{type: "reasoning", …}` | Dropped |
+| anything else | Dropped with a verbose log |
 
-The synthesized `messages[]` then runs through the same downstream pipe
-`/v1/messages` already uses — including the per-prompt thinking keyword
-detector. `detectKeywordBudget` already takes `Array<AnthropicMessage>` but
-operates only on the `role: "user"` text content, which is shape-compatible
-with our synthesized chat messages once we widen the input type (or, more
-cleanly, lift the detector to operate on a minimal `{role, content}` shape
-and re-export it for both translators). Implementation detail to settle
-during plan-writing; behavior is unchanged.
+Consecutive tool-call items before the next `*_output` merge into one
+assistant turn.
 
-### `reasoning.effort` → `thinking_budget`
+The synthesized `messages[]` runs through the same pipe `/v1/messages`
+uses, including `detectKeywordBudget` (lifted to a `{role, content}`
+shape and re-exported).
 
-Mapping (Claude models only; identified by model-name prefix `claude-`):
+## Tools
 
-| `effort` | `thinking_budget` |
+Codex sends `function`, `local_shell`, `custom`. All three lower to
+chat-completions function tools.
+
+| Codex tool def | Lowered to |
 |---|---|
-| `"minimal"` | undefined (no thinking) |
+| `{type: "function", name, description, parameters, strict}` | `{type: "function", function: {name, description, parameters, strict}}` |
+| `{type: "local_shell"}` | Function tool named `__cp_local_shell`, parameters = LocalShellAction schema |
+| `{type: "custom", name, description}` | Function tool named `__cp_custom_<n>` (per-request counter), parameters = `{type: "object", properties: {input: {type: "string"}}, required: ["input"]}` |
+
+The translator keeps a per-request `syntheticId → {family,
+originalName?}` map so the response translator can raise calls back to
+their native shape (`local_shell_call` / `custom_tool_call`) and recover
+the original `custom` tool name verbatim.
+
+`__cp_` is reserved. Any user `function`/`custom` whose `name` starts
+with `__cp_` (in `tools[]` or in historical `input[]` `function_call`
+items) → `400 reserved_tool_name`. Prevents a user-defined `local_shell`
+function from being raised as a privileged shell call.
+
+### Raising and fallback
+
+When the upstream model emits a function call:
+- Name in the synthetic-id map → raise to `local_shell_call` /
+  `custom_tool_call`.
+- Plain user `function` → emit as `function_call`.
+- Args fail to parse or fail shape validation:
+  - Plain function: pass the raw args string through; Codex surfaces it.
+  - Synthetic id: emit `response.failed` with
+    `code=upstream_malformed_tool_arguments`. Don't echo a `__cp_*` name
+    back to Codex (next turn would reject it).
+- `__cp_*` name **not** in the map (upstream hallucination / version
+  skew): `response.failed` with `code=undeclared_synthetic_tool`.
+
+Shape validation:
+- `__cp_local_shell` → `LocalShellAction` (object with
+  `command: string[]`, optional `workdir`, `env`, `timeout_ms`).
+- `__cp_custom_<n>` → `{input: string}`.
+
+### `tool_choice`
+
+| Codex value | Chat-completions value |
+|---|---|
+| `"auto"`, `"none"`, `"required"` | Same |
+| `{type: "function", name}` | `{type: "function", function: {name}}` |
+| `{type: "allowed_tools", tools, mode}` | Resolve each entry against declared `tools[]`. Entries are `"local_shell"` or `{type: "function" \| "custom", name}`. Anything that doesn't resolve → `400 unknown_tool_in_choice`. Empty resolved set → `400 empty_allowed_tools`. Forward the resolved list with the requested `mode`. |
+
+`web_search` is unsupported. If `allowed_tools` references it → `400
+unsupported_tool_in_choice`. Otherwise drop the def with a verbose log
+and let the model recover.
+
+## Reasoning effort
+
+Claude models (id starts with `claude-`):
+
+| `effort` | `thinking_budget` anchor |
+|---|---|
+| `"minimal"` | undefined |
 | `"low"` | 4000 |
 | `"medium"` | 10000 |
 | `"high"` | 31999 |
 
-These are the same anchor values as the keyword detector's `think` /
-`think hard` / `think harder` tiers, which keeps the dial consistent across
-both client paths. The keyword detector still runs on top with floor
-semantics, so a Codex prompt with `effort: "low"` plus `ultrathink` in the
-text gets `31999` — same rule as the Claude Code path.
+Anchor → keyword floor (`detectKeywordBudget`) → single
+`resolveThinkingBudget` clamp against `max_output_tokens - 1`.
 
-For non-Claude models the field is dropped. The GPT-5 / o-series
-reasoning-loss case is documented in TASKS.md and called out in the README.
+Non-Claude models: `reasoning.effort` is dropped with a verbose log.
+Real `reasoning_effort` pass-through to GPT-5 / o-series is follow-up
+once we confirm Copilot's broker accepts the field.
 
-## Streaming response translation
+## Response translation
 
-`stream-translation.ts` exports `translateChunksToResponsesEvents`, a
-generator (or `ReadableStream` transformer) that consumes the
-chat-completion SSE chunks emitted by `createChatCompletions` and produces
-Responses-API SSE events.
+Chat-completions deltas → Responses SSE events. Minimum set
+`process_sse` (in `codex-rs/core/src/client.rs`) parses — verify against
+the parser before merge:
 
-### State
+- `response.created` — once at start, `response.id = "resp_" + nanoid`,
+  reused in every subsequent event and the final envelope.
+- `response.output_item.added` — new assistant message or tool call.
+- `response.output_text.delta` — streaming text.
+- `response.output_item.done` — finalizes each item; this is what Codex
+  parses to reconstruct the turn.
+- `response.completed` — terminator with `usage` and final `status`.
 
-```ts
-interface ResponsesStreamState {
-  responseId: string          // generated once, reused on every event
-  model: string               // echoed from upstream
-  textBuffer: string          // accumulated assistant text
-  toolCalls: Map<number, {    // keyed by upstream OpenAI tool-call index
-    id: string
-    name: string
-    argumentsBuffer: string
-  }>
-  finishReason: string | null
-  usage: ChatCompletionUsage | null
-  emittedCreated: boolean
-}
-```
+Each item gets `id` = nanoid with a type prefix (`msg_`, `fc_`, `lsc_`,
+`ctc_`) and a 0-indexed `output_index`.
 
-### Event sequence
+### `finish_reason` → `status`
 
-For each upstream SSE chunk:
+| Upstream | Status | Notes |
+|---|---|---|
+| `stop` | `completed` | |
+| `tool_calls` | `completed` | Tool calls live in `output[]` |
+| `length` | `incomplete` | `incomplete_details: {reason: "max_output_tokens"}` |
+| `content_filter` | `incomplete` | `incomplete_details: {reason: "content_filter"}` |
+| `null` + `[DONE]` | `completed` | Normal end |
+| `null` no `[DONE]`, no accumulated content | n/a | Emit `response.failed code=stream_interrupted`; no `response.completed` |
+| `null` no `[DONE]`, partial content | `incomplete` | Validate the accumulated set: every item parseable + shape-valid → emit `output_item.done` for each in order, then `response.completed status=incomplete` (synthetics raise normally). Any item malformed → emit only `response.failed code=stream_interrupted_malformed_tool_arguments`, flush nothing. (Codex acts on `output_item.done`, so partial flush of a parallel turn could execute one privileged call alongside a malformed sibling.) |
+| anything else | `incomplete` | `incomplete_details: {reason: "unknown", upstream_reason: "<value>"}` |
 
-1. On the **first chunk**, emit `response.created` with a synthesized
-   response envelope (`id`, `model`, `status: "in_progress"`,
-   `output: []`, etc.). Set `emittedCreated = true`.
-2. For each `delta.content` text fragment, append to `textBuffer` and emit
-   `response.output_text.delta` with the fragment. Cosmetic — Codex
-   reconstructs from the eventual `output_item.done`, but emitting deltas
-   keeps the UX live.
-3. For each `delta.tool_calls[]` entry, look it up in `toolCalls` by
-   `index`; create the entry on first sight (capturing `id` and `name`),
-   append `function.arguments` to its buffer. No streaming
-   `function_call_arguments.delta` event in the first cut — Codex parses the
-   final `output_item.done`.
-4. When a chunk has `finish_reason`, store it. Don't terminate yet —
-   the upstream stream may still send a usage chunk.
-5. When the upstream stream ends:
-   - If `textBuffer` is non-empty, emit `response.output_item.done` with
-     `{type: "message", role: "assistant", content: [{type: "output_text", text: textBuffer}]}`.
-   - For each entry in `toolCalls`, emit `response.output_item.done` with
-     `{type: "function_call", call_id, name, arguments: argumentsBuffer}`.
-   - Emit `response.completed` with the full response envelope: `output[]`
-     populated, `status: "completed"` (or the mapped status from
-     `finishReason`), and `usage` mapped from the chat-completion usage
-     block (`prompt_tokens`/`completion_tokens` → `input_tokens`/
-     `output_tokens`, cached tokens → `input_tokens_details.cached_tokens`).
+## Errors
 
-### Error mapping
+Upstream HTTP → Responses error envelope (body wraps `{error: {type,
+message, code?}}`):
 
-When `createChatCompletions` throws an HTTP error mid-translation, emit a
-`response.failed` event with an error code mapped from the upstream HTTP
-status:
-
-| Upstream status | Responses-API error code |
+| Upstream | Type |
 |---|---|
-| 401, 403 | `usage_not_included` |
-| 429 | `rate_limit_exceeded` |
-| 400 with `context_length_exceeded` body marker | `context_length_exceeded` |
-| 5xx | `server_error` |
-| anything else | `server_error` (default) with the upstream message |
+| 400 | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 403 | `permission_error` |
+| 404 | `not_found_error` |
+| 408 / 504 | `timeout_error` |
+| 429 | `rate_limit_error` |
+| 5xx | `api_error` |
 
-If we haven't emitted `response.created` yet (failure in the request
-translator or before the upstream stream opens), respond with a non-stream
-HTTP error in the standard Responses-API error envelope instead, since SSE
-events without a prior `response.created` confuse Codex.
+Boundary: validation, hard-rejected fields, reserved names,
+`--manual`/`--rate-limit` denial, and upstream failure before the first
+chunk → non-stream HTTP envelope. After `response.created` is emitted
+→ `response.failed` SSE event then close.
 
-## Wiring, headers, tests, docs
+## Tests
 
-### Hono wiring
+Style of `tests/anthropic-*.test.ts`:
 
-`src/routes/responses/route.ts` defines the Hono app and exports it.
-`src/server.ts` mounts it at `/responses` and `/v1/responses`. The handler
-mirrors `messages/handler.ts`:
-
-1. Parse and validate the body via the new types.
-2. Run `--manual` approval (if enabled) and `--rate-limit` (if enabled),
-   reusing the global helpers. **Note:** these stay process-wide for now;
-   Codex and Claude Code share the same gates. TASKS.md tracks the per-route
-   isolation work.
-3. Translate request → call `createChatCompletions` → translate response.
-4. Branch on `payload.stream` (always true for current Codex, but support
-   non-stream too for completeness and so future tooling/tests can hit the
-   endpoint without SSE plumbing).
-
-### `X-Initiator` header
-
-`create-chat-completions.ts` derives `X-Initiator: agent` when any prior
-message has `role` of `assistant` or `tool`. Our synthesized `messages[]`
-already contains those roles when Codex sends `function_call` /
-`function_call_output` items, so the header is computed correctly with no
-change. **Do not "simplify" this header derivation away** — it affects
-Copilot premium-request accounting.
-
-### Tests
-
-New file `tests/responses-translation.test.ts`. Roughly 22 cases:
-
-**Request translation (`translateResponsesToChatCompletions`):**
-
-- Plain user message → single user chat message
-- `instructions` → leading system message
-- `input_image` → `{type: "image_url", …}` content part
-- `function_call` followed by `function_call_output` → assistant
-  `tool_calls` + tool message with matching `tool_call_id`
-- Two adjacent `function_call` items → coalesced into one assistant turn's
-  `tool_calls[]`
-- `reasoning` item → dropped, doesn't appear in messages
-- `custom_tool_call` / `local_shell_call` / `web_search_call` → dropped,
-  warning logged once
-- Tools: flat `{type: "function", name, …}` → nested wrapping
-- Tools: `{type: "custom"}` dropped
-- `tool_choice: "auto"` / `"required"` / `"none"` → forwarded
-- `tool_choice: {type: "function", name: "X"}` → rewrapped
-- `reasoning.effort: "minimal"` on Claude model → no `thinking_budget`
-- `reasoning.effort: "low"` on Claude model → `thinking_budget=4000`
-- `reasoning.effort: "high"` on Claude model → `thinking_budget=31999`
-- `reasoning.effort` on non-Claude model → dropped
-- `reasoning.effort: "low"` + user text containing `ultrathink` → final
-  `thinking_budget=31999` (floor semantics)
-- `metadata.user_id` → `user`
-- `max_output_tokens` → `max_tokens`
-- Dropped fields (`store`, `include`, `service_tier`, etc.) don't appear in
-  output
-
-**Stream translation (`translateChunksToResponsesEvents`):**
-
-- Single text-only assistant chunk → `response.created` →
-  `response.output_text.delta` → `response.output_item.done` (message) →
-  `response.completed` with usage
-- Tool-call chunks → `response.created` → `response.output_item.done`
-  (function_call) → `response.completed`
-- Mixed text + tool-call chunks → both `output_item.done` events emitted in
-  text-then-tool order
-- Error during stream → `response.failed` with mapped error code
-
-### Live smoke test
-
-After implementation, point a real Codex CLI at the running proxy
-(`OPENAI_BASE_URL=http://localhost:<port>/v1 codex`) and run a tool-using
-prompt end-to-end. Verify that text and at least one tool call round-trip,
-matching the procedure already used to validate the `thinking_budget`
-patch. Capture the verbose log to confirm `X-Initiator` flips to `agent`
-on the second turn.
-
-### Documentation
-
-Add a "OpenAI Responses API (Codex CLI)" subsection to README.md showing:
-
-- The endpoint URL.
-- A minimal Codex `~/.codex/config.toml` snippet pointing
-  `model_provider.openai.base_url` at the proxy.
-- The reasoning.effort → thinking_budget mapping table (Claude only).
-- A note that GPT-5 / o-series reasoning is currently lost on this path
-  (linking to TASKS.md) and that `--rate-limit` / `--manual` /
-  `MAX_THINKING_TOKENS` are still process-wide.
-
-Add one bullet to `CLAUDE.md`'s "Fork-specific behavior" section noting the
-new translator pair.
+- **Request translation:** message types, tool lowering, `tool_choice`
+  (`allowed_tools` resolution, unknown / empty / `web_search` → 400),
+  reasoning effort mapping (with clamp under low `max_output_tokens`),
+  metadata, coalescing, image parts.
+- **Stream translation:** text only, single tool call, parallel tool
+  calls, local-shell raise, custom-tool raise, malformed-args plain
+  fallback, malformed-args synthetic → `response.failed`, undeclared
+  `__cp_*` → `response.failed`, every `finish_reason` row above
+  (including parallel-turn transport-cut where one item is valid and
+  one is malformed → must emit only `response.failed`, not
+  `output_item.done`).
+- **Pre-stream errors:** unsupported continuation fields, reserved tool
+  name (in `tools[]` and in historical `input[]`), `--manual` /
+  `--rate-limit` denial, upstream non-OK before first chunk.
+- **Smoke:** `bun test` plus manual `codex --model claude-sonnet-4-5
+  --base-url http://localhost:4141 "explain this repo"` alongside a
+  concurrent Claude Code session.
 
 ## Files touched
 
-- `src/routes/responses/route.ts` (new)
-- `src/routes/responses/handler.ts` (new)
-- `src/routes/responses/responses-types.ts` (new)
-- `src/routes/responses/request-translation.ts` (new)
-- `src/routes/responses/stream-translation.ts` (new)
-- `src/server.ts` — mount the new route at `/responses` and `/v1/responses`
-- `src/routes/messages/non-stream-translation.ts` — minor: lift the role/
-  content shape that `detectKeywordBudget` accepts, or re-export a
-  scanner that takes `{role, content}` so both translators reuse it
-  unchanged. (Settle exact mechanism in the implementation plan.)
-- `tests/responses-translation.test.ts` (new) — ~22 test cases
-- `README.md` — new subsection
-- `CLAUDE.md` — one bullet
+- `src/routes/responses/*` — new (5 files above).
+- `src/server.ts` — mount at `/responses` and `/v1/responses`.
+- `src/routes/messages/non-stream-translation.ts` — export
+  `detectKeywordBudget` with a `{role, content}` parameter shape.
+- `tests/responses-*.test.ts` — new.
+- `README.md` — short "Codex CLI" section.
 
-## Out of scope (deferred to TASKS.md or follow-ups)
+## Out of scope
 
-- **Upstream Responses API client.** Routing GPT-5 / o-series through
-  Copilot's actual Responses upstream so `reasoning.effort` survives.
-  Currently tracked in TASKS.md as "Codex reasoning on GPT-5 / o-series via
-  Copilot."
-- **Per-route isolation of `--rate-limit`, `--manual`, `MAX_THINKING_TOKENS`.**
-  Tracked in TASKS.md as "Per-client isolation for parallel agents."
-- **WebSocket / push paths.** Codex doesn't use them; not implemented.
-- **`custom_tool_call`, `local_shell_call`, `web_search_call` tool
-  families.** Dropped with a warning. Codex degrades to "tool not
-  available" on those.
-- **`previous_response_id` / `background` / `store`-backed continuations.**
-  Codex doesn't rely on server-side response storage in our setup.
-- **Streaming `function_call_arguments.delta` events.** First cut emits the
-  arguments only via the final `output_item.done`, which is sufficient for
-  Codex; per-token argument deltas are a UX polish.
+- OpenAI Responses upstream client (would let GPT-5/o-series reasoning
+  round-trip and let us honor `previous_response_id` / `store` /
+  `background` instead of rejecting). Tracked in TASKS.md.
+- Per-route isolation of `--rate-limit`, `--manual`,
+  `MAX_THINKING_TOKENS`. Tracked in TASKS.md.
+- Web search tools.

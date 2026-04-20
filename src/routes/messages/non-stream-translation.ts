@@ -92,16 +92,35 @@ const THINKING_KEYWORDS: ReadonlyArray<{ pattern: RegExp; budget: number }> = [
 
 const FENCED_CODE_BLOCK = /```[\s\S]*?```/g
 
-function extractUserText(message: AnthropicUserMessage): string {
-  if (typeof message.content === "string") return message.content
-  return message.content
-    .filter((b): b is AnthropicTextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
+// Structural shape both AnthropicMessage and the chat-completions Message
+// satisfy. We only inspect user-role text content, so any message whose
+// content is a string or an array of typed blocks works.
+export interface KeywordSourceMessage {
+  role: string
+  content?: unknown
+}
+
+function extractUserText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  const parts: Array<string> = []
+  for (const block of content) {
+    if (
+      typeof block === "object"
+      && block !== null
+      && "type" in block
+      && (block as { type: unknown }).type === "text"
+      && "text" in block
+      && typeof (block as { text: unknown }).text === "string"
+    ) {
+      parts.push((block as { text: string }).text)
+    }
+  }
+  return parts.join("\n")
 }
 
 export function detectKeywordBudget(
-  messages: Array<AnthropicMessage>,
+  messages: ReadonlyArray<KeywordSourceMessage>,
 ): number | undefined {
   // Walk back to the most recent user-authored TEXT message, skipping
   // user-role turns that contain only tool_result / image blocks (they
@@ -110,7 +129,7 @@ export function detectKeywordBudget(
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.role !== "user") continue
-    const candidate = extractUserText(m)
+    const candidate = extractUserText(m.content)
     if (candidate.trim().length > 0) {
       text = candidate
       break
