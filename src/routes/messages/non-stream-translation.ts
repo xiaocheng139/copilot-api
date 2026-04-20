@@ -68,6 +68,52 @@ function resolveThinkingBudget(
   return Math.min(requested, ceiling)
 }
 
+// Per-prompt thinking-budget keyword triggers. Compound forms (megathink,
+// ultrathink, think hard/harder) match anywhere; bare `think` requires
+// start-of-line to avoid firing on incidental "I think we should..." prose.
+const THINKING_KEYWORDS: ReadonlyArray<{ pattern: RegExp; budget: number }> = [
+  { pattern: /\b(?:think harder|ultrathink)\b/i, budget: 31999 },
+  { pattern: /\b(?:think hard|megathink)\b/i, budget: 10000 },
+  { pattern: /(?:^|\n)\s*think\b/i, budget: 4000 },
+]
+
+const FENCED_CODE_BLOCK = /```[\s\S]*?```/g
+
+function extractUserText(message: AnthropicUserMessage): string {
+  if (typeof message.content === "string") return message.content
+  return message.content
+    .filter((b): b is AnthropicTextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+}
+
+export function detectKeywordBudget(
+  messages: Array<AnthropicMessage>,
+): number | undefined {
+  // Walk back to the most recent user-authored TEXT message, skipping
+  // user-role turns that contain only tool_result / image blocks (they
+  // appear after every assistant tool_use in agentic loops).
+  let text: string | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role !== "user") continue
+    const candidate = extractUserText(m)
+    if (candidate.trim().length > 0) {
+      text = candidate
+      break
+    }
+  }
+  if (text === undefined) return undefined
+
+  // Strip fenced code blocks so triggers inside code samples don't fire.
+  const scrubbed = text.replaceAll(FENCED_CODE_BLOCK, "")
+
+  for (const { pattern, budget } of THINKING_KEYWORDS) {
+    if (pattern.test(scrubbed)) return budget
+  }
+  return undefined
+}
+
 function translateModelName(model: string): string {
   // Subagent requests use a specific model number which Copilot doesn't support
   if (model.startsWith("claude-sonnet-4-")) {
