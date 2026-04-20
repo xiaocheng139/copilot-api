@@ -356,6 +356,24 @@ Notes:
 - Only Claude models on the ChatCompletions path are affected. The `effort: low|medium|high` parameter (Messages API / Responses API) is **not** forwarded — Copilot's CAPI broker doesn't accept it.
 - Run with `--verbose` to see `thinking_budget` in the translated payload log line.
 
+#### Per-prompt budget override
+
+Override the budget per-request using natural-language triggers in your prompt:
+
+| Trigger | Budget |
+|---|---|
+| `think` (at start of a line) | 4000 |
+| `think hard` / `megathink` | 10000 |
+| `think harder` / `ultrathink` | 31999 |
+
+The translator scans the most recent user message that contains text
+(skipping tool-result-only turns mid-loop), strips fenced code blocks, then
+matches. The highest-budget trigger wins. Triggers act as a **floor** —
+they raise `MAX_THINKING_TOKENS` for that request but cannot lower it, so
+a casual `think` in your prompt won't downgrade an explicit higher budget.
+The keyword is left in the prompt verbatim. The next user prompt
+re-evaluates.
+
 To dial the budget per-session, use shell aliases:
 
 ```sh
