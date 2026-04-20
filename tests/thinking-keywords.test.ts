@@ -156,4 +156,21 @@ describe("detectKeywordBudget", () => {
     ]
     expect(detectKeywordBudget(messages)).toBeUndefined()
   })
+
+  test("`think` inside fenced code block does not trigger", () => {
+    const text = "review this:\n```\nthink about state\n```\n"
+    expect(detectKeywordBudget([userText(text)])).toBeUndefined()
+  })
+
+  test("`ultrathink` inside fenced code block does NOT trigger", () => {
+    // Compound triggers can match anywhere in the message, but fenced code
+    // is stripped first — so they don't fire from inside ``` blocks.
+    const text = "review this:\n```\nultrathink everything\n```\n"
+    expect(detectKeywordBudget([userText(text)])).toBeUndefined()
+  })
+
+  test("trigger outside code block still fires when other text is fenced", () => {
+    const text = "ultrathink this:\n```\njust some code\n```\n"
+    expect(detectKeywordBudget([userText(text)])).toBe(31999)
+  })
 })
