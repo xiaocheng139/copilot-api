@@ -1,7 +1,7 @@
 {
   "id": "ARCH-003",
   "title": "Extract a deep 'run a translated completion' lifecycle module; shrink the three handlers to wiring",
-  "status": "In progress",
+  "status": "Pending Verification",
   "priority": 3,
   "leverage": "high",
   "risk": "medium",
@@ -50,6 +50,11 @@
       "timestamp": "2026-06-11",
       "status": "In progress",
       "note": "STEP 1 (commit 7356629): added src/lib/completion-lifecycle.ts with isNonStreaming (defined once), enterCompletion (rate-limit gate), applyRequestGating (manual-approval gate), and parameterized errorTypeForStatus(status, vocab). STEP 2 (commit pending): repointed all 3 handlers to import these; deleted the 3 local isNonStreaming copies and the bespoke errorTypeForStatus in responses/handler.ts (now calls shared one with vocab=\"anthropic\", byte-identical strings). Streaming loops + chat-completions token/max_tokens logic left handler-local. Gates: bun test 111 pass / 0 fail (responses-stream 16/16, transport-cut preserved), typecheck exit 0, lint exit 0."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "STEP 3 (commit 0feaad5): added withErrorForwarding HOF to completion-lifecycle.ts and replaced the identical try/catch->forwardError block in all 4 route definitions (chat-completions, messages '/', messages '/count_tokens', responses). STEP 4 (commit pending): added tests/completion-lifecycle.test.ts (4 tests) covering isNonStreaming true/false and errorTypeForStatus for both vocabularies. All 6 acceptance criteria met: (1) isNonStreaming defined once in completion-lifecycle.ts; (2) rate-limit + manual-approval gating defined once (enterCompletion/applyRequestGating); (3) route try/catch centralized via withErrorForwarding; (4) error vocabulary parameterized, no bespoke inline copy in responses handler; (5) responses transport-cut/[DONE] preserved (tests/responses-stream.test.ts 16/16 pass); (6) final gates: bun test 115 pass / 0 fail, typecheck exit 0, lint exit 0. Out-of-scope respected: chat-completions token-count/max_tokens defaulting and count-tokens-handler untouched. Handing off to independent verification subagent."
     }
   ]
 }
