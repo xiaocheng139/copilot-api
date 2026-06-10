@@ -25,14 +25,16 @@ import {
 // invariant Anthropic requires (budget < max_tokens). Copilot's broker handles
 // per-model clamping on its side. When maxTokens is unknown (Responses allows
 // an absent max_output_tokens) the requested value is forwarded unclamped.
+// When maxTokens <= 1 no positive budget can satisfy budget < max_tokens, so
+// thinking is disabled (undefined) rather than emitting an invalid payload.
 export function resolveThinkingBudget(
   requested: number | undefined,
   maxTokens: number | undefined,
 ): number | undefined {
   if (requested === undefined || requested <= 0) return undefined
   if (maxTokens === undefined) return requested
-  const ceiling = Math.max(1, maxTokens - 1)
-  return Math.min(requested, ceiling)
+  if (maxTokens <= 1) return undefined
+  return Math.min(requested, maxTokens - 1)
 }
 
 // Floor semantics: a per-prompt keyword can raise an explicitly requested

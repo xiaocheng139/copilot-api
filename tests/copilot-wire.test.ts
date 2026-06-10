@@ -29,9 +29,9 @@ describe("resolveThinkingBudget", () => {
     expect(resolveThinkingBudget(31999, undefined)).toBe(31999)
   })
 
-  test("ceiling never drops below 1", () => {
-    expect(resolveThinkingBudget(10, 1)).toBe(1)
-    expect(resolveThinkingBudget(10, 0)).toBe(1)
+  test("maxTokens <= 1 disables thinking (no budget can satisfy budget < max_tokens)", () => {
+    expect(resolveThinkingBudget(10, 1)).toBeUndefined()
+    expect(resolveThinkingBudget(10, 0)).toBeUndefined()
   })
 })
 
