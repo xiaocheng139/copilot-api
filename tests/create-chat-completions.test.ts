@@ -54,3 +54,49 @@ test("sets X-Initiator to user if only user present", async () => {
   ).headers
   expect(headers["X-Initiator"]).toBe("user")
 })
+
+test("fast model: strips -fast, sends base model + speed + beta header", async () => {
+  const payload: ChatCompletionsPayload = {
+    messages: [{ role: "user", content: "hi" }],
+    model: "claude-opus-4.8-fast",
+  }
+  await createChatCompletions(payload)
+
+  const call = fetchMock.mock.calls.at(-1) as [
+    string,
+    { headers: Record<string, string>; body: string },
+  ]
+  const sentBody = JSON.parse(call[1].body) as { model: string; speed?: string }
+  expect(sentBody.model).toBe("claude-opus-4.8")
+  expect(sentBody.speed).toBe("fast")
+  expect(call[1].headers["anthropic-beta"]).toBe("fast-mode-2026-02-01")
+})
+
+test("non-fast model: no speed field, no beta header", async () => {
+  const payload: ChatCompletionsPayload = {
+    messages: [{ role: "user", content: "hi" }],
+    model: "claude-opus-4.8",
+  }
+  await createChatCompletions(payload)
+
+  const call = fetchMock.mock.calls.at(-1) as [
+    string,
+    { headers: Record<string, string>; body: string },
+  ]
+  const sentBody = JSON.parse(call[1].body) as { model: string; speed?: string }
+  expect(sentBody.model).toBe("claude-opus-4.8")
+  expect(sentBody.speed).toBeUndefined()
+  expect(call[1].headers["anthropic-beta"]).toBeUndefined()
+})
+
+test("does not mutate the caller's payload object", async () => {
+  const payload: ChatCompletionsPayload = {
+    messages: [{ role: "user", content: "hi" }],
+    model: "claude-opus-4.8-fast",
+  }
+  await createChatCompletions(payload)
+
+  // The clone must leave the caller's object pristine for logging/reuse.
+  expect(payload.model).toBe("claude-opus-4.8-fast")
+  expect((payload as { speed?: string }).speed).toBeUndefined()
+})
