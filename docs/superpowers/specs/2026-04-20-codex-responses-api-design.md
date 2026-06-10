@@ -46,7 +46,7 @@ Mounted at `/responses` and `/v1/responses`. Reuses
 | `input[]` | `messages[]` (see below) |
 | `tools[]` | Lowered to function tools (see "Tools") |
 | `tool_choice` | Forwarded; see "Tools" |
-| `parallel_tool_calls` | Forwarded |
+| `parallel_tool_calls` | Ignored (Copilot's CAPI broker rejects unknown body fields) |
 | `reasoning.effort` | Mapped to `thinking_budget` for Claude (see "Reasoning") |
 | `max_output_tokens` | `max_tokens` |
 | `temperature`, `top_p` | Forwarded (subject to thinking-on drop rule) |

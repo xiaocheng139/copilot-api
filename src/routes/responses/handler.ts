@@ -107,22 +107,35 @@ export async function handleResponses(c: Context) {
     const streamState = createInitialStreamState()
     let receivedAnyChunk = false
 
+    const writeEvents = async (events: ReturnType<typeof finalizeStream>) => {
+      for (const event of events) {
+        await stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event),
+        })
+      }
+    }
+
     try {
       for await (const rawEvent of response) {
         if (rawEvent.data === "[DONE]") {
+          // Normal termination. If the stream never carried a terminal chunk
+          // with a non-null finish_reason, finalize here as a completed
+          // response (spec: "null + [DONE] → completed") rather than letting
+          // the post-loop guard treat it as a transport cut.
+          if (receivedAnyChunk && !streamState.finalized) {
+            streamState.finalized = true
+            await writeEvents(finalizeStream(streamState, ctx))
+          }
           break
         }
         if (!rawEvent.data) continue
 
         const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
         receivedAnyChunk = true
-        const events = translateChunkToResponsesEvents(chunk, streamState, ctx)
-        for (const event of events) {
-          await stream.writeSSE({
-            event: event.type,
-            data: JSON.stringify(event),
-          })
-        }
+        await writeEvents(
+          translateChunkToResponsesEvents(chunk, streamState, ctx),
+        )
       }
     } catch (error) {
       consola.error("Stream translation error:", error)
@@ -151,13 +164,9 @@ export async function handleResponses(c: Context) {
         })
         return
       }
-      const events = finalizeStream(streamState, ctx, { transportCut: true })
-      for (const event of events) {
-        await stream.writeSSE({
-          event: event.type,
-          data: JSON.stringify(event),
-        })
-      }
+      await writeEvents(
+        finalizeStream(streamState, ctx, { transportCut: true }),
+      )
     }
   })
 }
