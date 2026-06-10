@@ -1,7 +1,7 @@
 {
   "id": "ARCH-004",
   "title": "Collapse the repeated fetch -> !ok throw -> typed-json pattern into one upstream-fetch helper",
-  "status": "Pending Verification",
+  "status": "Done",
   "priority": 4,
   "leverage": "medium",
   "risk": "low",
@@ -51,6 +51,11 @@
       "timestamp": "2026-06-11",
       "status": "Pending Verification",
       "note": "Implemented in commit b6abdc8. Added src/lib/request.ts with requestJson<T>(url, init, errorMessage) (fetch + !ok->throw HTTPError + typed json). Collapsed 6 json-returning services to URL+headers+type+message; all domain interfaces (GetCopilotTokenResponse, GithubUserResponse, DeviceCodeResponse, QuotaDetail/QuotaSnapshots/CopilotUsageResponse, EmbeddingResponse+kin, ModelsResponse+kin) remain co-located. create-embeddings.ts pre-fetch copilotToken guard preserved. Added tests/request.test.ts (typed-return, init-forwarding, !ok->HTTPError with message+status). poll-access-token.ts left hand-rolled (verified: !ok is keep-polling, not error). Streaming branch in create-chat-completions.ts untouched. api-config.ts header builders untouched. Gates after change: bun test 114 pass/0 fail (was 111, +3 helper tests), typecheck clean, lint clean. Pre-commit lint hook ran clean, no re-stage needed. Acceptance criteria 1-6 all met. Handing off to verification subagent."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Done",
+      "note": "Verification by independent subagent. GATES (run independently in worktree): bun test = 114 pass / 0 fail / 206 expect across 8 files; bun run typecheck = exit 0 (tsc clean); bun run lint = exit 0 (eslint clean). No regression vs 111-baseline; +3 are tests/request.test.ts. PER-CRITERION: (1) PASS - src/lib/request.ts requestJson<T> genuinely does fetch -> if(!response.ok) throw new HTTPError(errorMessage,response) -> return (await response.json()) as T. (2) PASS - all 6 json services route through it (get-copilot-token, get-user, get-device-code, get-copilot-usage, create-embeddings, get-models); grep confirms zero remaining 'await fetch(' in those files and no stray response.json()/throw new HTTPError left in them. (3) PASS - return-type interfaces stay co-located in each service file; none moved into request.ts (helper holds only the generic). (4) STREAMING PASS - independently read create-chat-completions.ts: git diff main...HEAD for it is EMPTY (untouched); its payload.stream branch still returns events(response) and only the non-stream branch does response.json(); never routed through requestJson. (5) POLL PASS - independently read poll-access-token.ts: git diff for it is EMPTY (untouched); its !response.ok still does sleep+continue (keep-polling), does NOT throw; semantics preserved. (6) PASS - gates green. OUT-OF-SCOPE respected: git diff name-only = exactly request.ts + 6 services + tests/request.test.ts + task json; api-config.ts and create-chat-completions.ts both show empty diff. EXTRA ADVERSARIAL CHECKS: get-vscode-version.ts correctly excluded (uses response.text()+regex+fallback, not the !ok->throw ritual); async->sync conversions (createEmbeddings/getModels/etc.) safe - all callers await the returned promise, and createEmbeddings' now-synchronous guard throw is caught by route.ts try/catch->forwardError identically. VERDICT: all acceptance criteria met, gates green, within out_of_scope -> Done."
     }
   ]
 }
