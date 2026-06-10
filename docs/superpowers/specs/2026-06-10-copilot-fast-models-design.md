@@ -112,17 +112,25 @@ export interface ParsedFastModel {
 export function parseFastModel(model: string): ParsedFastModel
 ```
 
-Strips exactly one trailing `-fast`. A non-string / empty input returns
-`{ baseModel: <input>, isFast: false }`.
+Strips exactly one trailing `-fast`. Input is always a `string` (`payload.model`
+is typed `string`); the only edge case is `""`, which returns
+`{ baseModel: "", isFast: false }`. A bare `"-fast"` yields
+`{ baseModel: "", isFast: true }`.
 
 **Wiring: `src/services/copilot/create-chat-completions.ts`** — the single
 chokepoint every client passes through. Immediately before the `fetch`
-(currently ~lines 26–35), run `parseFastModel(payload.model)`. When `isFast`:
+(currently ~lines 26–35), run `parseFastModel(payload.model)`. When `isFast`,
+build a **shallow clone** for the upstream request rather than mutating the
+caller's object (the payload originates in a translator and may be logged or
+reused by the caller):
 
-- `payload.model = baseModel`
-- `payload.speed = "fast"`
-- add header `"anthropic-beta": FAST_BETA_HEADER` (alongside the existing
-  `X-Initiator` header logic)
+```ts
+const { baseModel, isFast } = parseFastModel(payload.model)
+const upstreamPayload =
+  isFast ? { ...payload, model: baseModel, speed: "fast" } : payload
+if (isFast) headers["anthropic-beta"] = FAST_BETA_HEADER
+// ...fetch with body: JSON.stringify(upstreamPayload)
+```
 
 Add `speed?: string | null` to the `ChatCompletionsPayload` interface in the
 same file.
@@ -159,41 +167,86 @@ export async function cacheFastCapableIds(): Promise<void> {
 }
 ```
 
-**Startup: `src/start.ts`** — call `cacheFastCapableIds()` near `cacheModels()`
-(after `setupCopilotToken()`). It must **not** block startup on a slow
-models.dev; because `/models` reads `state.fastCapableIds` live, a slow fetch
-only means a `/models` call in the first few seconds might omit twins — a
-non-issue since pickers fetch on demand. Because the `-fast` entries are added
-to `state.models.data` as advertised, they also flow naturally into the
-`--claude-code` interactive picker (`start.ts` builds it from
-`state.models.data`).
+**Startup: `src/start.ts`** — `await cacheFastCapableIds()` immediately after
+`cacheModels()` (after `setupCopilotToken()`). Startup already awaits four
+network calls sequentially before serving (`cacheVSCodeVersion`,
+`setupGitHubToken`, `setupCopilotToken`, `cacheModels`); discovery joins them as
+a fifth. It is bounded by the ~3s fail-open timeout inside `getFastCapableIds`,
+so a slow models.dev delays startup by at most that, then proceeds with an empty
+set. **This is a deliberate trade:** awaiting (rather than fire-and-forget) is
+what lets the `--claude-code` interactive picker include fast variants, because
+that picker is built synchronously from a model list at startup
+(`start.ts:72-86`) and does **not** read the `/models` route.
 
-**Route: `src/routes/models/route.ts`** — after mapping Copilot's real models,
-for each real model whose `id ∈ state.fastCapableIds`, emit a **second** entry:
-same shape, `id = \`${id}${FAST_SUFFIX}\``, `display_name = \`${name} (Fast)\``.
-The intersection (Copilot's real list ∩ models.dev's fast set) ensures we only
-advertise variants whose base model Copilot actually serves for this account.
+**Shared twin derivation: `src/lib/fast-model.ts`** — to keep the CLI picker and
+the `/models` route consistent, both derive twins from one pure helper rather
+than each re-implementing the rule:
+
+```ts
+// Given the real model entries and the capable set, return base entries each
+// followed by a synthesized "-fast" twin when the base id is fast-capable.
+export function withFastVariants<T extends { id: string }>(
+  models: Array<T>,
+  fastCapableIds: Set<string>,
+  makeTwin: (base: T) => T,
+): Array<T>
+```
+
+`makeTwin` is supplied by each caller so the twin matches that surface's object
+shape (the route's mapped response shape; the picker's plain id list).
+
+**Route: `src/routes/models/route.ts`** — after mapping Copilot's models into
+the existing response shape, pass the mapped array through `withFastVariants`.
+The twin is produced by **spreading the entire mapped base entry, then
+overriding only `id` and `display_name`** — never a shared reference, never a
+hand-picked subset of fields:
+
+```ts
+makeTwin: (base) => ({
+  ...base,
+  id: `${base.id}${FAST_SUFFIX}`,
+  display_name: `${base.display_name} (Fast)`,
+})
+```
+
+This preserves `owned_by`, `type`, `created`, and any future route-added field
+automatically. The intersection (Copilot's real list ∩ models.dev's fast set)
+ensures we only advertise variants whose base model Copilot actually serves for
+this account.
+
+**CLI picker: `src/start.ts`** — the picker currently maps
+`state.models.data.map((model) => model.id)`. Route the **model objects** through
+`withFastVariants` first (twin = `{ ...base, id: base.id + FAST_SUFFIX }`), then
+`.map(m => m.id)` to the id list the picker consumes. Same helper, same ordering
+as `/models`, so the `--claude-code` menu offers `…-fast` entries consistently.
 
 ## Data flow
 
 ```
-Startup (start.ts)
+Startup (start.ts) — all awaited before serving
   ├─ cacheModels()           → state.models          (Copilot's real list)
-  └─ cacheFastCapableIds()   → state.fastCapableIds  (Set from models.dev)
+  └─ cacheFastCapableIds()   → state.fastCapableIds  (Set from models.dev, ~3s fail-open)
 
 GET /models (route.ts)
-  for each model in state.models.data:
-    emit base entry
-    if model.id ∈ state.fastCapableIds: emit "<id>-fast" entry
+  map state.models.data → response entries
+  → withFastVariants(entries, state.fastCapableIds, makeTwin)
+      emits each base entry, plus a spread-and-override "-fast" twin
+      when base.id ∈ fastCapableIds
+
+--claude-code picker (start.ts)
+  withFastVariants(state.models.data, state.fastCapableIds,
+                   base => ({ ...base, id: `${base.id}-fast` }))
+    .map(m => m.id)
 
 POST /v1/messages | /chat/completions | /v1/responses
   → translate to ChatCompletionsPayload (model forwarded verbatim)
   → createChatCompletions():
        { baseModel, isFast } = parseFastModel(payload.model)
-       if isFast: payload.model = baseModel
-                  payload.speed = "fast"
-                  headers["anthropic-beta"] = FAST_BETA_HEADER
-  → fetch Copilot CAPI
+       upstreamPayload = isFast
+         ? { ...payload, model: baseModel, speed: "fast" }   // clone, no mutation
+         : payload
+       if isFast: headers["anthropic-beta"] = FAST_BETA_HEADER
+  → fetch Copilot CAPI with upstreamPayload
 ```
 
 ## Error handling
@@ -223,9 +276,11 @@ POST /v1/messages | /chat/completions | /v1/responses
 ## Testing strategy
 
 - **Unit — `fast-model.ts`** (TDD; the spec's core invariant): `-fast` stripped
-  → correct base; non-fast untouched; edge cases — literal `"-fast"`, double
-  suffix `"...-fast-fast"` (strip one), empty string, case sensitivity
-  (`-FAST` is not matched).
+  → correct base; non-fast untouched; edge cases — literal `"-fast"` →
+  `{ baseModel: "", isFast: true }`, double suffix `"...-fast-fast"` (strip one),
+  empty string, case sensitivity (`-FAST` is not matched). Plus `withFastVariants`:
+  given a capable set, base entries each get exactly one twin via `makeTwin`;
+  non-capable entries get none; ordering is base-then-twin.
 - **Unit — `getFastCapableIds`**: captured `api.json` fixture → expected id Set;
   malformed/empty JSON → empty Set, never throws.
 - **Integration — `create-chat-completions`** (extend existing
@@ -233,22 +288,26 @@ POST /v1/messages | /chat/completions | /v1/responses
   inbound `...-fast` payload produces (a) base `model` upstream, (b)
   `speed: "fast"` in body, (c) `anthropic-beta` header present; and a non-fast
   payload produces none of those. Encodes *why*: fast mode must reach Copilot in
-  exactly opencode's wire shape.
+  exactly opencode's wire shape. **Regression (comment 2):** assert the caller's
+  original payload object is unmutated after the call (its `model` unchanged, no
+  `speed` key added) — proving the clone, not in-place mutation.
 - **Route — `/models`**: with a seeded `fastCapableIds`, assert both base and
-  `-fast` entries appear; with an empty set, assert only base entries (proves
-  graceful degradation).
+  `-fast` entries appear; the twin carries **all** base fields (`owned_by`,
+  `type`, `created`, `created_at`) with only `id` and `display_name` overridden,
+  and is not the same object reference as its base. With an empty set, assert
+  only base entries (proves graceful degradation).
 
 ## Files touched
 
 | File | Change |
 |---|---|
-| `src/lib/fast-model.ts` | **New.** `parseFastModel`, constants. |
-| `src/services/models-dev/get-fast-capable.ts` | **New.** `getFastCapableIds`. |
-| `src/services/copilot/create-chat-completions.ts` | Inject strip/flag/header; add `speed?` to payload type. |
-| `src/lib/state.ts` | Add `fastCapableIds: Set<string>`. |
+| `src/lib/fast-model.ts` | **New.** `parseFastModel`, `withFastVariants`, constants. |
+| `src/services/models-dev/get-fast-capable.ts` | **New.** `getFastCapableIds` (fail-open, ~3s timeout). |
+| `src/services/copilot/create-chat-completions.ts` | Clone payload + inject base model/`speed`/header; add `speed?` to payload type. |
+| `src/lib/state.ts` | Add `fastCapableIds: Set<string>` (default empty). |
 | `src/lib/utils.ts` | Add `cacheFastCapableIds()`. |
-| `src/start.ts` | Call `cacheFastCapableIds()` at startup. |
-| `src/routes/models/route.ts` | Synthesize `-fast` entries from the capable set. |
+| `src/start.ts` | `await cacheFastCapableIds()` at startup; route `--claude-code` picker ids through `withFastVariants`. |
+| `src/routes/models/route.ts` | Synthesize `-fast` entries via `withFastVariants` (spread base, override id + display_name). |
 | `tests/fast-model.test.ts` | **New.** Unit tests. |
 | `tests/get-fast-capable.test.ts` | **New.** Unit tests + fixture. |
 | `tests/create-chat-completions.test.ts` | Extend with fast-mode assertions. |
