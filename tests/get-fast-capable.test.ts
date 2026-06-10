@@ -59,6 +59,14 @@ describe("extractFastCapableIds", () => {
       ),
     ).toEqual(new Set())
   })
+
+  test("never throws on a null/undefined root", () => {
+    // The pure extractor must defend its "never throws" contract even against
+    // an off-type null root, not rely on the fetch wrapper's catch.
+    const call = extractFastCapableIds as (x: unknown) => Set<string>
+    expect(call(null)).toEqual(new Set())
+    expect(call(undefined)).toEqual(new Set())
+  })
 })
 
 describe("getFastCapableIds (fail-open)", () => {

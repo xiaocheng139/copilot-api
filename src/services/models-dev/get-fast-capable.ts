@@ -21,9 +21,11 @@ type ModelsDevApi = Record<string, ModelsDevProvider | undefined>
  * Pure: collect every github-copilot model id whose value declares
  * experimental.modes.fast. Other providers are ignored. Never throws.
  */
-export function extractFastCapableIds(api: ModelsDevApi): Set<string> {
+export function extractFastCapableIds(
+  api: ModelsDevApi | null | undefined,
+): Set<string> {
   const ids = new Set<string>()
-  const copilot = api["github-copilot"]
+  const copilot = api?.["github-copilot"]
   if (!copilot?.models) return ids
   for (const [id, model] of Object.entries(copilot.models)) {
     if (model?.experimental?.modes?.fast !== undefined) {
