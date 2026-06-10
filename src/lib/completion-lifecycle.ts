@@ -1,4 +1,7 @@
+import type { Context } from "hono"
+
 import { awaitApproval } from "~/lib/approval"
+import { forwardError } from "~/lib/error"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
@@ -58,3 +61,17 @@ export function errorTypeForStatus(
   }
   return "error"
 }
+
+/**
+ * Wrap a route handler so any thrown error is rendered through the shared
+ * `forwardError` envelope. Centralizes the try/catch every route.ts repeated.
+ */
+export const withErrorForwarding =
+  (handler: (c: Context) => Promise<Response>) =>
+  async (c: Context): Promise<Response> => {
+    try {
+      return await handler(c)
+    } catch (error) {
+      return await forwardError(c, error)
+    }
+  }
