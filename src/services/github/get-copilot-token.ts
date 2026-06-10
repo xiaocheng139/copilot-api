@@ -1,19 +1,13 @@
 import { GITHUB_API_BASE_URL, githubHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import { requestJson } from "~/lib/request"
 import { state } from "~/lib/state"
 
-export const getCopilotToken = async () => {
-  const response = await fetch(
+export const getCopilotToken = () =>
+  requestJson<GetCopilotTokenResponse>(
     `${GITHUB_API_BASE_URL}/copilot_internal/v2/token`,
-    {
-      headers: githubHeaders(state),
-    },
+    { headers: githubHeaders(state) },
+    "Failed to get Copilot token",
   )
-
-  if (!response.ok) throw new HTTPError("Failed to get Copilot token", response)
-
-  return (await response.json()) as GetCopilotTokenResponse
-}
 
 // Trimmed for the sake of simplicity
 interface GetCopilotTokenResponse {
