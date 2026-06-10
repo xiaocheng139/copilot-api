@@ -48,6 +48,17 @@ describe("extractFastCapableIds", () => {
   test("returns an empty set when github-copilot has no models", () => {
     expect(extractFastCapableIds({ "github-copilot": {} })).toEqual(new Set())
   })
+
+  test("never throws on a null model value (malformed external JSON)", () => {
+    // models.dev is untrusted JSON; a model entry could be null. The pure
+    // extractor must defend against it, not rely on the fetch wrapper's catch.
+    const malformed = { "github-copilot": { models: { foo: null } } }
+    expect(
+      extractFastCapableIds(
+        malformed as unknown as Parameters<typeof extractFastCapableIds>[0],
+      ),
+    ).toEqual(new Set())
+  })
 })
 
 describe("getFastCapableIds (fail-open)", () => {

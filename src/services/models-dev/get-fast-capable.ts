@@ -12,7 +12,7 @@ interface ModelsDevModel {
 }
 
 interface ModelsDevProvider {
-  models?: Record<string, ModelsDevModel>
+  models?: Record<string, ModelsDevModel | null>
 }
 
 type ModelsDevApi = Record<string, ModelsDevProvider | undefined>
@@ -26,7 +26,7 @@ export function extractFastCapableIds(api: ModelsDevApi): Set<string> {
   const copilot = api["github-copilot"]
   if (!copilot?.models) return ids
   for (const [id, model] of Object.entries(copilot.models)) {
-    if (model.experimental?.modes?.fast !== undefined) {
+    if (model?.experimental?.modes?.fast !== undefined) {
       ids.add(id)
     }
   }
