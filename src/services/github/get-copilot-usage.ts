@@ -1,8 +1,10 @@
 import { GITHUB_API_BASE_URL, githubHeaders } from "~/lib/api-config"
 import { requestJson } from "~/lib/request"
-import { state } from "~/lib/state"
+import { state as defaultState, type State } from "~/lib/state"
 
-export const getCopilotUsage = (): Promise<CopilotUsageResponse> =>
+export const getCopilotUsage = (
+  state: State = defaultState,
+): Promise<CopilotUsageResponse> =>
   requestJson<CopilotUsageResponse>(
     `${GITHUB_API_BASE_URL}/copilot_internal/user`,
     { headers: githubHeaders(state) },

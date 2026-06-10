@@ -1,7 +1,7 @@
 {
   "id": "ARCH-005",
   "title": "Give the services a state injection seam and group the state singleton by concern",
-  "status": "Not started",
+  "status": "In progress",
   "priority": 5,
   "leverage": "medium",
   "risk": "medium",
@@ -39,6 +39,16 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. state singleton field inventory + mutator/reader sites + the existing parameter-seam in api-config.ts/rate-limit.ts verified by reading state.ts, create-chat-completions.ts, api-config.ts. Split into (A) injection seam and (B) concern grouping; (A) recommended first."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Started in worktree on branch task/ARCH-005-state-injection-seam. Verified file:line claims by reading all 6 service files + api-config.ts/rate-limit.ts (existing parameter-seam pattern: both take state: State). Confirmed via grep that every production caller of createChatCompletions/createEmbeddings/getModels/getCopilotToken/getGitHubUser/getCopilotUsage invokes with NO state arg, so a defaulted `state: State = singleton` param leaves all production callers unchanged (zero caller edits for A). Re-confirmed zero process.env/Bun.env in src/. Plan: (A) add defaulted state param to the 6 services + an injection test; commit; then evaluate (B)."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Move (A) complete. All 6 services now accept `state: State = defaultState` (singleton aliased to defaultState on import; param named `state` so every existing `state.` body reference is untouched -> minimal diff). Zero production-caller edits needed. Added tests/state-injection.test.ts (2 tests): proves createChatCompletions authenticates with an INJECTED token (Authorization: Bearer injected-token, editor-version vscode/9.9.9) and leaves the module-global singleton unmutated, and that the token guard reads the injected param not the global. Rejection test uses the repo's imperative try/catch convention (expect().rejects trips await-thenable lint). Gates: bun test 113 pass/0 fail (+2), typecheck clean, lint clean (exit 0). Next: evaluate Move (B) concern grouping."
     }
   ]
 }
