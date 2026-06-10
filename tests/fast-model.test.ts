@@ -4,6 +4,7 @@ import {
   FAST_SUFFIX,
   FAST_BETA_HEADER,
   parseFastModel,
+  withFastVariants,
 } from "../src/lib/fast-model"
 
 describe("parseFastModel", () => {
@@ -48,5 +49,35 @@ describe("constants", () => {
   test("expose the agreed suffix and beta header", () => {
     expect(FAST_SUFFIX).toBe("-fast")
     expect(FAST_BETA_HEADER).toBe("fast-mode-2026-02-01")
+  })
+})
+
+const makeTwin = (base: { id: string; label: string }) => ({
+  ...base,
+  id: `${base.id}-fast`,
+})
+
+describe("withFastVariants", () => {
+  const capable = new Set(["a", "c"])
+
+  test("emits a twin after each fast-capable entry, base-then-twin order", () => {
+    const input = [
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+      { id: "c", label: "C" },
+    ]
+    const out = withFastVariants(input, capable, makeTwin)
+    expect(out.map((m) => m.id)).toEqual(["a", "a-fast", "b", "c", "c-fast"])
+  })
+
+  test("emits nothing extra when the set is empty", () => {
+    const input = [{ id: "a", label: "A" }]
+    const out = withFastVariants(input, new Set(), makeTwin)
+    expect(out.map((m) => m.id)).toEqual(["a"])
+  })
+
+  test("the twin is produced by makeTwin (carries other fields)", () => {
+    const out = withFastVariants([{ id: "a", label: "A" }], capable, makeTwin)
+    expect(out[1]).toEqual({ id: "a-fast", label: "A" })
   })
 })

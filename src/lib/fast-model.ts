@@ -22,3 +22,24 @@ export function parseFastModel(model: string): ParsedFastModel {
   }
   return { baseModel: model, isFast: false }
 }
+
+/**
+ * Given real model entries and the fast-capable id set, return each base entry
+ * immediately followed by a synthesized `-fast` twin when its id is fast-capable.
+ * `makeTwin` is supplied by the caller so the twin matches that surface's object
+ * shape (the /models response shape, or the picker's id-bearing model object).
+ */
+export function withFastVariants<T extends { id: string }>(
+  models: Array<T>,
+  fastCapableIds: Set<string>,
+  makeTwin: (base: T) => T,
+): Array<T> {
+  const result: Array<T> = []
+  for (const model of models) {
+    result.push(model)
+    if (fastCapableIds.has(model.id)) {
+      result.push(makeTwin(model))
+    }
+  }
+  return result
+}
