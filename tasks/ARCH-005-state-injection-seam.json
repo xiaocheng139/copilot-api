@@ -1,0 +1,44 @@
+{
+  "id": "ARCH-005",
+  "title": "Give the services a state injection seam and group the state singleton by concern",
+  "status": "Not started",
+  "priority": 5,
+  "leverage": "medium",
+  "risk": "medium",
+  "source": "improve-codebase-architecture review, 2026-06-10",
+  "body": {
+    "summary": "The state singleton is imported as a module global directly by the services, so there is no seam to inject it at. It also mixes three concerns -- auth tokens, write-once config, and startup caches -- in 11 flat fields. api-config.ts and rate-limit.ts already take state as a PARAMETER (a real injection seam); the services do not. This makes translator-through-service paths untestable without mutating global state, and parallel tests race on it.",
+    "files": [
+      "src/lib/state.ts",
+      "src/services/copilot/create-chat-completions.ts",
+      "src/services/copilot/create-embeddings.ts",
+      "src/services/copilot/get-models.ts",
+      "src/services/github/get-copilot-token.ts",
+      "src/services/github/get-user.ts",
+      "src/services/github/get-copilot-usage.ts"
+    ],
+    "problem": "state (state.ts:3-27) has 11 flat fields spanning three concerns: AUTH (githubToken, copilotToken -- mutated at runtime by token.ts), CONFIG (accountType, manualApprove, rateLimitWait, showToken, rateLimitSeconds -- write-once from CLI in start.ts), CACHES (models, fastCapableIds, vsCodeVersion -- fetched at startup by utils.ts), plus runtime bookkeeping (lastRequestTimestamp). The good pattern already exists: api-config.ts (copilotHeaders/copilotBaseUrl/githubHeaders) and rate-limit.ts take state: State as an explicit parameter -- injectable. But the SERVICES import the singleton directly (create-chat-completions.ts:7, create-embeddings.ts, get-models.ts, github/* via githubHeaders(state)). A test exercising the chokepoint must mutate module-global state.copilotToken / state.models before calling and reset after -- no injection seam; parallel tests would race on shared mutable state. Secondary readability issue: there is a NAME COLLISION -- the `state` local parameter in both stream-translators (AnthropicStreamState / ResponsesStreamState) shadows the concept of the singleton, producing ~60 misleading `state.` grep hits that are NOT the singleton.",
+    "solution": "Two independent moves (can be done separately): (A) Extend the existing parameter-seam to the services -- have createChatCompletions / createEmbeddings / getModels / the github fetchers accept state (or just the fields they need) as a parameter, defaulting to the singleton for production callers, so tests can inject. (B) Group the 11 fields by concern (e.g. state.auth.{githubToken,copilotToken}, state.config.{...}, state.cache.{models,fastCapableIds,vsCodeVersion}) so 'what is config vs cache vs secret' is legible at a glance. (A) is the testability win; (B) is the legibility win.",
+    "benefits": "Tests: translators-through-services become exercisable without global mutation, killing the parallel-test race. Locality: concern grouping makes the lifecycle of each field (write-once config vs runtime-mutated auth vs startup cache) self-documenting. This is primarily a NARROW-THE-INTERFACE / add-a-seam improvement rather than a depth one.",
+    "deletion_test": "N/A in the classic sense -- this is about adding a seam and regrouping, not extracting a hiding module. The justification is the test-race and the concern-mixing, both concrete.",
+    "risk_notes": "MEDIUM risk by blast radius: touches many files (every service + every state mutator). Move (B) in particular ripples to all ~8 mutator sites (token.ts:20,33,56,75; utils.ts:19,23,28; rate-limit.ts:14,21,43; start.ts:45-59; auth.ts:21) and every reader. Recommend doing (A) first (additive, low blast radius) and treating (B) as optional follow-up. Confirm no env reads are assumed -- review verified zero process.env/Bun.env in src/, config flows only via state, so the seam is the single source.",
+    "acceptance_criteria": [
+      "(A) Services accept injected state/dependencies; production callers still work via default",
+      "(A) A test can exercise createChatCompletions with an injected token/model without mutating the module global",
+      "(B optional) state fields grouped by concern (auth/config/cache) with all mutators+readers updated",
+      "No new env reads introduced; config still flows via state only",
+      "bun test passes; bun run typecheck passes; bun run lint passes"
+    ],
+    "out_of_scope": [
+      "Per-client isolation of rate-limit/manual/MAX_THINKING_TOKENS (already tracked in TASKS.md backlog)",
+      "Renaming the stream-state `state` locals -- optional readability nicety, not required"
+    ]
+  },
+  "progress": [
+    {
+      "timestamp": "2026-06-10",
+      "status": "Not started",
+      "note": "Task created from improve-codebase-architecture review. state singleton field inventory + mutator/reader sites + the existing parameter-seam in api-config.ts/rate-limit.ts verified by reading state.ts, create-chat-completions.ts, api-config.ts. Split into (A) injection seam and (B) concern grouping; (A) recommended first."
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "id": "ARCH-002",
+  "title": "Extract a shared streaming SSE accumulator; let each translator render its own event vocabulary",
+  "status": "Not started",
+  "priority": 2,
+  "leverage": "high",
+  "risk": "high",
+  "source": "improve-codebase-architecture review, 2026-06-10",
+  "body": {
+    "summary": "The streaming SSE state machine is built twice -- once for Anthropic (messages/), once for Responses (responses/). Both fold Copilot ChatCompletions chunks into the same neutral concepts (text buffer + tool-calls keyed by upstream index + usage + finish_reason), then render to different SSE vocabularies. The shareable ACCUMULATION is duplicated; only the RENDERING genuinely differs.",
+    "files": [
+      "src/routes/messages/stream-translation.ts",
+      "src/routes/messages/anthropic-types.ts",
+      "src/routes/responses/stream-translation.ts"
+    ],
+    "problem": "AnthropicStreamState (anthropic-types.ts:195-206) and ResponsesStreamState (responses/stream-translation.ts:46-58) track the same four concepts: start-sent flag (messageStartSent / responseCreatedSent), an open content slot (contentBlockIndex+contentBlockOpen vs message accumulator + nextOutputIndex), tool-calls keyed by upstream index (the alignment problem CLAUDE.md explicitly flags as subtle and non-interchangeable between formats), and finalized-once. Responses additionally captures usage+finishReason; Anthropic re-derives usage per-chunk. The per-chunk loops -- translateChunkToAnthropicEvents (stream-translation.ts:20-180) and translateChunkToResponsesEvents (responses stream-translation.ts:108-233) -- follow the same skeleton: start-once -> text-delta -> index-keyed tool loop -> finalize on finish_reason. Both carry eslint-disable max-lines-per-function, complexity. What genuinely differs: Anthropic uses a content_block open/close model; Responses uses an output_item.added/done + accumulator model, plus synthetic-tool raising, transport-cut handling, and shape validation.",
+    "solution": "Extract a shared stream accumulator that folds ChatCompletionChunk[] into a neutral in-progress turn model (text buffer + index-aligned tool-call accumulators + usage + finish_reason + finalized flag). Each translator renders that neutral model into its own SSE event vocabulary behind its own seam. Keep all responses-specific logic (synthetic-tool raising via syntheticToolMap, transport-cut / [DONE] finalization, LocalShellAction / {input:string} shape validation) inside responses/ -- it renders from the shared accumulator but is not part of it.",
+    "benefits": "Locality: a tool-call-index-alignment bug -- the exact subtlety CLAUDE.md warns about ('Tool-call indices are not interchangeable between the two formats') -- gets fixed once instead of twice. Tests: the fiddly accumulation is tested directly against chunk sequences, independent of either SSE format; today it can only be tested through one of the two renderers. Both giant functions lose their max-lines/complexity disables once the accumulation is factored out.",
+    "deletion_test": "Deleting the shared accumulator re-duplicates index-aligned tool-call accumulation + usage capture across both stream translators -- complexity reappears, so it earns its keep.",
+    "risk_notes": "HIGHEST-RISK candidate. This is the most load-bearing, subtle code in the repo (CLAUDE.md singles it out: 'read the state struct before touching this code'). The accumulation/rendering split must be drawn carefully so neither renderer's edge cases (Anthropic block open/close ordering; Responses transport-cut emitting ONLY response.failed on malformed synthetic) regress. Do ARCH-001 first; tackle this with TDD against existing tests/anthropic-*.test.ts and tests/responses-stream.test.ts as the regression net.",
+    "acceptance_criteria": [
+      "A shared accumulator type + fold function exists and is consumed by both stream translators",
+      "Tool-call index alignment logic exists in exactly one place",
+      "All existing streaming tests pass unchanged (tests/anthropic-*.test.ts, tests/responses-stream.test.ts)",
+      "Responses-specific raising / transport-cut / validation remains in responses/ and still emits only response.failed on malformed-synthetic transport cut",
+      "bun test passes; bun run typecheck passes; bun run lint passes"
+    ],
+    "out_of_scope": [
+      "Request-side primitives (tracked in ARCH-001)",
+      "Changing the wire-visible SSE event shapes emitted to either client"
+    ]
+  },
+  "progress": [
+    {
+      "timestamp": "2026-06-10",
+      "status": "Not started",
+      "note": "Task created from improve-codebase-architecture review. State-machine duplication verified by reading both stream-translation.ts files and AnthropicStreamState vs ResponsesStreamState. Flagged highest-risk; depends on ARCH-001 landing first."
+    }
+  ]
+}
