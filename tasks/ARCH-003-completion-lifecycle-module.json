@@ -1,0 +1,45 @@
+{
+  "id": "ARCH-003",
+  "title": "Extract a deep 'run a translated completion' lifecycle module; shrink the three handlers to wiring",
+  "status": "Not started",
+  "priority": 3,
+  "leverage": "high",
+  "risk": "medium",
+  "source": "improve-codebase-architecture review, 2026-06-10",
+  "body": {
+    "summary": "The request lifecycle is copy-pasted across the three main route handlers. Each repeats the same dance and only the three translator functions (request / response / stream) actually vary. The streaming-detection predicate is byte-identical in all three, and error-envelope shaping is inconsistent.",
+    "files": [
+      "src/routes/chat-completions/handler.ts",
+      "src/routes/messages/handler.ts",
+      "src/routes/responses/handler.ts",
+      "src/routes/chat-completions/route.ts",
+      "src/routes/messages/route.ts",
+      "src/routes/responses/route.ts",
+      "src/lib/error.ts"
+    ],
+    "problem": "All three handlers repeat: checkRateLimit(state) -> parse payload + consola.debug -> translate request -> if (state.manualApprove) await awaitApproval() -> createChatCompletions -> if (isNonStreaming(response)) branch -> translate/stream. isNonStreaming is BYTE-IDENTICAL in all three: chat-completions/handler.ts:66-68, messages/handler.ts:89-91, responses/handler.ts:174-176 (all `(response): response is ChatCompletionResponse => Object.hasOwn(response, 'choices')`). Every route.ts wraps its handler in an identical try { return await handler(c) } catch (e) { return await forwardError(c, e) }. Error-envelope shaping is INCONSISTENT: responses/handler.ts:178-187 has a bespoke errorTypeForStatus (Anthropic-style type strings) called twice inline, while chat and messages fall back to forwardError's hardcoded type:'error' (lib/error.ts:37,48). The only genuine variation across handlers is the translators; chat is a passthrough, messages adds translateToOpenAI/translateToAnthropic/translateChunkToAnthropicEvents, responses adds translateResponsesToOpenAI/translateNonStreamingResponse/translateChunkToResponsesEvents + transport-cut finalization.",
+    "solution": "Create a deep lifecycle module (e.g. runTranslatedCompletion) that owns rate-limit, manual-approval, createChatCompletions call, streaming detection, and error-envelope mapping -- parameterized by the per-endpoint translator functions (translateRequest, translateNonStreamingResponse, makeStreamRenderer) and an error-vocabulary selector. Handlers shrink to: parse payload + supply translators. Fold the single isNonStreaming definition and the status->type map into this module. Decide one consistent error-envelope story (per-client type vocabularies selected by a parameter, not copy-paste).",
+    "benefits": "Locality: request-flow policy (approval gating, streaming detection, error typing) lives once instead of three times. Leverage: a new endpoint supplies three functions instead of a 90-140-line handler (responses/handler.ts is ~187 lines with an eslint-disable max-lines-per-function). Tests: the lifecycle gets one test surface; error typing becomes consistent across all clients rather than 1 bespoke + 2 generic.",
+    "deletion_test": "Inlining the lifecycle module back into handlers reproduces the same rate-limit/approval/streaming-detection/error code 3x -- complexity reappears across callers.",
+    "risk_notes": "MEDIUM risk: the responses streaming path has bespoke transport-cut / [DONE] finalization (handler.ts:106-171) with no analog in the other handlers. The makeStreamRenderer seam must be expressive enough to host that without forcing it back up into shared code. The chat-completions handler also has model lookup + token-count + max_tokens defaulting (handler.ts:23-48) that the others lack -- keep that as handler-local pre-translation, not lifecycle.",
+    "acceptance_criteria": [
+      "isNonStreaming defined exactly once",
+      "Rate-limit + manual-approval gating defined exactly once",
+      "Each route.ts try/catch -> forwardError wrapper either centralized or justified",
+      "Error-envelope vocabulary selected by parameter; no bespoke inline copy in responses handler",
+      "Responses transport-cut / [DONE] behavior preserved (tests/responses-stream.test.ts pass)",
+      "bun test passes; bun run typecheck passes; bun run lint passes"
+    ],
+    "out_of_scope": [
+      "chat-completions-specific token counting / max_tokens defaulting -- stays handler-local",
+      "count-tokens-handler (never streams) -- unaffected"
+    ]
+  },
+  "progress": [
+    {
+      "timestamp": "2026-06-10",
+      "status": "Not started",
+      "note": "Task created from improve-codebase-architecture review. Handler boilerplate + identical isNonStreaming + inconsistent error envelopes verified by reading all three handlers, server.ts, and lib/error.ts."
+    }
+  ]
+}

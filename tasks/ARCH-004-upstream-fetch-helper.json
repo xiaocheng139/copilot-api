@@ -1,0 +1,46 @@
+{
+  "id": "ARCH-004",
+  "title": "Collapse the repeated fetch -> !ok throw -> typed-json pattern into one upstream-fetch helper",
+  "status": "Not started",
+  "priority": 4,
+  "leverage": "medium",
+  "risk": "low",
+  "source": "improve-codebase-architecture review, 2026-06-10",
+  "body": {
+    "summary": "The 'fetch(url,{headers}) -> if(!response.ok) throw new HTTPError(...) -> return await response.json() as T' pattern is smeared across ~8 service files. Each file is individually shallow (a URL + a return-type cast), but the !ok->throw boilerplate is duplicated 8 times. The genuine value in these files is their return-type interfaces, not their bodies.",
+    "files": [
+      "src/services/github/get-copilot-token.ts",
+      "src/services/github/get-user.ts",
+      "src/services/github/get-device-code.ts",
+      "src/services/github/poll-access-token.ts",
+      "src/services/github/get-copilot-usage.ts",
+      "src/services/copilot/create-embeddings.ts",
+      "src/services/copilot/get-models.ts",
+      "src/lib/api-config.ts"
+    ],
+    "problem": "Each service repeats the same shape. Example, get-copilot-token.ts:5-16: fetch(`${GITHUB_API_BASE_URL}/copilot_internal/v2/token`, {headers: githubHeaders(state)}) -> if (!response.ok) throw new HTTPError('Failed to get Copilot token', response) -> return (await response.json()) as GetCopilotTokenResponse. The same 3-line ritual recurs in get-user.ts, get-device-code.ts, poll-access-token.ts, get-copilot-usage.ts, create-embeddings.ts, get-models.ts. Deletion test on any single file: inlining it would NOT regrow complexity (the file holds only a URL + a type cast) -- so the per-file split is a hypothetical seam, not a real one. The real shallow smear is the !ok->throw PATTERN repeated 8x. Note api-config.ts already centralizes header construction well (copilotHeaders/githubHeaders/copilotBaseUrl) -- that part is NOT a target; only the fetch+throw+json ritual is.",
+    "solution": "Add one typed upstream-fetch helper (e.g. copilotFetch<T>(url, init) and githubFetch<T>(url, init), or a single requestJson<T>) that owns: fetch, the !response.ok -> throw new HTTPError check, and the typed response.json() cast. Each service collapses to a URL + headers + type argument. The domain return-type interfaces (GetCopilotTokenResponse, QuotaDetail/QuotaSnapshots in get-copilot-usage.ts, ModelsResponse) keep their home in their respective files.",
+    "benefits": "Locality: retry policy, error logging, and the 401-handling story can later live in ONE place instead of 8. Leverage: a new upstream call becomes a single line. Low risk -- pure mechanical extraction with no behavior change.",
+    "deletion_test": "Deleting the helper re-spreads the !ok->throw->json ritual back across 8 files -- complexity reappears, so the helper earns its keep (unlike the individual service files, which do not).",
+    "risk_notes": "LOW risk. Watch two behavioral details: (1) streaming responses (create-chat-completions.ts returns events(response) when payload.stream) must NOT be forced through a json() helper -- keep the helper for json-returning calls only, or make streaming an explicit branch. (2) poll-access-token.ts may treat non-ok as a normal 'keep polling' signal rather than an error -- verify its current semantics before wrapping it; it may need to stay hand-rolled or use a non-throwing variant.",
+    "acceptance_criteria": [
+      "A typed fetch helper exists and owns fetch + !ok->throw HTTPError + typed json",
+      "github/* and copilot/* json-returning services use it",
+      "Return-type interfaces remain co-located with their service",
+      "Streaming path in create-chat-completions.ts is unaffected",
+      "poll-access-token.ts polling semantics verified and preserved",
+      "bun test passes; bun run typecheck passes; bun run lint passes"
+    ],
+    "out_of_scope": [
+      "api-config.ts header builders -- already well-factored, leave alone",
+      "create-chat-completions.ts streaming branch"
+    ]
+  },
+  "progress": [
+    {
+      "timestamp": "2026-06-10",
+      "status": "Not started",
+      "note": "Task created from improve-codebase-architecture review. Pattern duplication verified by reading get-copilot-token.ts and confirming the same shape across the services/ layer. Deletion test applied: individual files are shallow, the pattern is the smear."
+    }
+  ]
+}

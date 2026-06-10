@@ -1,0 +1,42 @@
+{
+  "id": "ARCH-001",
+  "title": "Extract a deep module owning the Copilot ChatCompletions wire primitives shared by both translators",
+  "status": "Not started",
+  "priority": 1,
+  "leverage": "high",
+  "risk": "low",
+  "source": "improve-codebase-architecture review, 2026-06-10",
+  "body": {
+    "summary": "The Anthropic translator (src/routes/messages/) and the Codex/Responses translator (src/routes/responses/) both convert client requests into the SAME upstream ChatCompletionsPayload, and several transformations are duplicated near-verbatim. There is no neutral module that owns 'talking to the Copilot ChatCompletions shape', so each primitive is implemented (and must be fixed) twice.",
+    "files": [
+      "src/routes/messages/non-stream-translation.ts",
+      "src/routes/responses/request-translation.ts",
+      "src/routes/messages/stream-translation.ts",
+      "src/services/copilot/create-chat-completions.ts"
+    ],
+    "problem": "Duplicated transformations into the shared ChatCompletionsPayload: (1) thinking-budget resolution -- resolveThinkingBudget at non-stream-translation.ts:76-83 vs request-translation.ts:96-104; the keyword/anchor floor combine at non-stream:41-49 vs request:152-160; the 'thinking-on -> drop temperature/top_p, spread thinking_budget' block at non-stream:63-68 vs request:175-180 (effectively identical). (2) Tool lowering -- translateAnthropicToolsToOpenAI at non-stream:342-356 vs the 'function' case of lowerTools at request:242-257 (same target {type:'function',function:{name,description,parameters}}). (3) Content-part lowering -- mapContent at non-stream:290-340 vs mapResponsesContent at request:562-587 (identical hasImage gate -> join('\\n\\n') else build ContentPart[] with image_url). (4) Usage reshaping (input_tokens = prompt_tokens - cached_tokens) appears 3x in messages/ (non-stream:426-436, stream:44-54, stream:161-171) and once in responses/ (responses stream:129-140). The seam is already half-formed: detectKeywordBudget is shared, but responses/request-translation.ts:9 imports it by reaching ACROSS into the other translator's file (../messages/non-stream-translation) -- that cross-route import is the tell that the primitive has no neutral home.",
+    "solution": "Introduce one deep module (e.g. src/services/copilot/wire/ or src/lib/copilot-wire.ts) that owns the Copilot ChatCompletions primitives: thinking-budget resolution (resolveThinkingBudget + the temp/top_p drop rule), function-tool lowering, content-part lowering (text/image), and usage reshaping (cached-token math). Both translators become thin adapters mapping their CLIENT vocabulary (Anthropic blocks / Responses items) onto these neutral primitives. Move the shared detectKeywordBudget into this module too so the cross-route import disappears.",
+    "benefits": "Locality: the budget < max_tokens-1 invariant, the temperature/top_p drop rule, and the cached-token subtraction each live in ONE place instead of being fixed in 2-4. Leverage: a fourth wire format starts from primitives instead of copy-paste. Tests: the invariants get a single test surface instead of being re-tested per translator. The cross-file import smell (responses reaching into messages) is removed.",
+    "deletion_test": "Deleting this proposed module would re-scatter the same 4 transformations back across both translators -- complexity reappears across callers, so the module earns its keep.",
+    "acceptance_criteria": [
+      "resolveThinkingBudget exists exactly once and both translators call it",
+      "The temperature/top_p drop + thinking_budget spread rule exists exactly once",
+      "Function-tool lowering exists exactly once",
+      "Content-part (text/image) lowering exists exactly once",
+      "Usage reshaping (cached-token math) exists exactly once",
+      "responses/request-translation.ts no longer imports from ../messages/*",
+      "bun test passes; bun run typecheck passes; bun run lint passes"
+    ],
+    "out_of_scope": [
+      "tool_choice translation (genuinely different between the two -- responses resolves synthetic/allowed_tools); leave per-translator",
+      "Streaming SSE state machine (tracked separately in ARCH-002)"
+    ]
+  },
+  "progress": [
+    {
+      "timestamp": "2026-06-10",
+      "status": "Not started",
+      "note": "Task created from improve-codebase-architecture review. Duplication verified by reading both translator bodies (non-stream-translation.ts, request-translation.ts) and the three usage sites in messages/stream-translation.ts."
+    }
+  ]
+}
