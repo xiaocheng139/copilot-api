@@ -1,4 +1,13 @@
 import {
+  applyThinkingBudget,
+  buildFunctionTool,
+  combineBudgetFloor,
+  detectKeywordBudget,
+  lowerContentParts,
+  resolveThinkingBudget,
+  type WireContentPiece,
+} from "~/services/copilot/chat-completions-wire"
+import {
   type ChatCompletionsPayload,
   type ContentPart,
   type Message,
@@ -6,7 +15,6 @@ import {
   type ToolCall,
 } from "~/services/copilot/create-chat-completions"
 
-import { detectKeywordBudget } from "../messages/non-stream-translation"
 import {
   type ResponsesAllowedToolEntry,
   type ResponsesContentPart,
@@ -93,16 +101,6 @@ const REASONING_ANCHORS: Record<
   high: 31999,
 }
 
-function resolveThinkingBudget(
-  requested: number | undefined,
-  maxTokens: number | undefined,
-): number | undefined {
-  if (requested === undefined || requested <= 0) return undefined
-  if (maxTokens === undefined) return requested
-  const ceiling = Math.max(1, maxTokens - 1)
-  return Math.min(requested, ceiling)
-}
-
 // ----- Public entry point --------------------------------------------------
 
 export interface RequestTranslationResult {
@@ -152,13 +150,11 @@ export function translateResponsesToOpenAI(
   let thinkingBudget: number | undefined
   if (isClaude) {
     const keywordBudget = detectKeywordBudget(messages)
-    const requested =
-      keywordBudget !== undefined && effortBudget !== undefined ?
-        Math.max(keywordBudget, effortBudget)
-      : (keywordBudget ?? effortBudget)
-    thinkingBudget = resolveThinkingBudget(requested, req.max_output_tokens)
+    thinkingBudget = resolveThinkingBudget(
+      combineBudgetFloor(keywordBudget, effortBudget),
+      req.max_output_tokens,
+    )
   }
-  const thinkingOn = thinkingBudget !== undefined
 
   // 6. Translate tool_choice (uses syntheticToolMap to resolve allowed_tools).
   const toolChoice = translateToolChoice(
@@ -172,12 +168,13 @@ export function translateResponsesToOpenAI(
     messages,
     max_tokens: req.max_output_tokens,
     stream: req.stream,
-    temperature: thinkingOn ? undefined : req.temperature,
-    top_p: thinkingOn ? undefined : req.top_p,
     user: req.metadata?.user_id,
     tools: loweredTools,
     tool_choice: toolChoice,
-    ...(thinkingOn && { thinking_budget: thinkingBudget }),
+    ...applyThinkingBudget(thinkingBudget, {
+      temperature: req.temperature,
+      top_p: req.top_p,
+    }),
   }
 
   return { payload, syntheticToolMap }
@@ -241,31 +238,25 @@ function lowerTools(
     switch (tool.type) {
       case "function": {
         const fn = tool as Extract<ResponsesTool, { type: "function" }>
-        const entry: Tool = {
-          type: "function",
-          function: {
+        lowered.push(
+          buildFunctionTool({
             name: fn.name,
             description: fn.description,
-            parameters: fn.parameters ?? {
-              type: "object",
-              properties: {},
-            },
-          },
-        }
-        lowered.push(entry)
+            parameters: fn.parameters,
+          }),
+        )
         break
       }
       case "local_shell": {
         if (!syntheticToolMap.has(LOCAL_SHELL_TOOL)) {
           syntheticToolMap.set(LOCAL_SHELL_TOOL, { family: "local_shell" })
-          lowered.push({
-            type: "function",
-            function: {
+          lowered.push(
+            buildFunctionTool({
               name: LOCAL_SHELL_TOOL,
               description: "Execute a local shell command.",
               parameters: LOCAL_SHELL_PARAMETERS,
-            },
-          })
+            }),
+          )
         }
         break
       }
@@ -277,14 +268,13 @@ function lowerTools(
           family: "custom",
           originalName: ct.name,
         })
-        lowered.push({
-          type: "function",
-          function: {
+        lowered.push(
+          buildFunctionTool({
             name: syntheticName,
             description: ct.description ?? `Custom tool ${ct.name}`,
             parameters: CUSTOM_TOOL_PARAMETERS,
-          },
-        })
+          }),
+        )
         break
       }
       case "web_search":
@@ -562,26 +552,10 @@ function buildMessages(
 function mapResponsesContent(
   content: Array<ResponsesContentPart>,
 ): string | Array<ContentPart> {
-  const hasImage = content.some((p) => p.type === "input_image")
-  if (!hasImage) {
-    return content
-      .filter(
-        (p): p is { type: "input_text" | "output_text"; text: string } =>
-          p.type === "input_text" || p.type === "output_text",
-      )
-      .map((p) => p.text)
-      .join("\n\n")
-  }
-  const parts: Array<ContentPart> = []
-  for (const p of content) {
-    if (p.type === "input_text" || p.type === "output_text") {
-      parts.push({ type: "text", text: p.text })
-    } else {
-      parts.push({
-        type: "image_url",
-        image_url: { url: p.image_url, detail: p.detail },
-      })
-    }
-  }
-  return parts
+  const pieces: Array<WireContentPiece> = content.map((p) =>
+    p.type === "input_text" || p.type === "output_text" ?
+      { kind: "text", text: p.text }
+    : { kind: "image", url: p.image_url, detail: p.detail },
+  )
+  return lowerContentParts(pieces)
 }

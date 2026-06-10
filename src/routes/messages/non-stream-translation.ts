@@ -1,4 +1,14 @@
 import {
+  applyThinkingBudget,
+  buildFunctionTool,
+  combineBudgetFloor,
+  detectKeywordBudget,
+  lowerContentParts,
+  resolveThinkingBudget,
+  toAnthropicUsage,
+  type WireContentPiece,
+} from "~/services/copilot/chat-completions-wire"
+import {
   type ChatCompletionResponse,
   type ChatCompletionsPayload,
   type ContentPart,
@@ -35,18 +45,10 @@ export function translateToOpenAI(
       payload.thinking.budget_tokens
     : undefined
 
-  // Floor semantics: keyword can raise an explicit MAX_THINKING_TOKENS
-  // budget but must never silently lower it.
-  const requestedBudget =
-    keywordBudget !== undefined && payloadBudget !== undefined ?
-      Math.max(keywordBudget, payloadBudget)
-    : (keywordBudget ?? payloadBudget)
-
   const thinkingBudget = resolveThinkingBudget(
-    requestedBudget,
+    combineBudgetFloor(keywordBudget, payloadBudget),
     payload.max_tokens,
   )
-  const thinkingOn = thinkingBudget !== undefined
 
   return {
     model: translateModelName(payload.model),
@@ -57,93 +59,14 @@ export function translateToOpenAI(
     max_tokens: payload.max_tokens,
     stop: payload.stop_sequences,
     stream: payload.stream,
-    // Anthropic forbids temperature/top_p when extended thinking is on; Copilot's
-    // broker mirrors that constraint, so drop them when forwarding a budget.
-    temperature: thinkingOn ? undefined : payload.temperature,
-    top_p: thinkingOn ? undefined : payload.top_p,
     user: payload.metadata?.user_id,
     tools: translateAnthropicToolsToOpenAI(payload.tools),
     tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
-    ...(thinkingOn && { thinking_budget: thinkingBudget }),
+    ...applyThinkingBudget(thinkingBudget, {
+      temperature: payload.temperature,
+      top_p: payload.top_p,
+    }),
   }
-}
-
-// vscode-copilot-chat clamps the budget to [min, maxBudget, max_tokens-1].
-// We don't know the per-model min/max here, so we only enforce the max_tokens-1
-// invariant Anthropic requires (budget < max_tokens). Copilot's broker handles
-// per-model clamping on its side.
-function resolveThinkingBudget(
-  requested: number | undefined,
-  maxTokens: number,
-): number | undefined {
-  if (requested === undefined || requested <= 0) return undefined
-  const ceiling = Math.max(1, maxTokens - 1)
-  return Math.min(requested, ceiling)
-}
-
-// Per-prompt thinking-budget keyword triggers. Compound forms (megathink,
-// ultrathink, think hard/harder) match anywhere; bare `think` requires
-// start-of-line to avoid firing on incidental "I think we should..." prose.
-const THINKING_KEYWORDS: ReadonlyArray<{ pattern: RegExp; budget: number }> = [
-  { pattern: /\b(?:think harder|ultrathink)\b/i, budget: 31999 },
-  { pattern: /\b(?:think hard|megathink)\b/i, budget: 10000 },
-  { pattern: /(?:^|\n)\s*think\b/i, budget: 4000 },
-]
-
-const FENCED_CODE_BLOCK = /```[\s\S]*?```/g
-
-// Structural shape both AnthropicMessage and the chat-completions Message
-// satisfy. We only inspect user-role text content, so any message whose
-// content is a string or an array of typed blocks works.
-export interface KeywordSourceMessage {
-  role: string
-  content?: unknown
-}
-
-function extractUserText(content: unknown): string {
-  if (typeof content === "string") return content
-  if (!Array.isArray(content)) return ""
-  const parts: Array<string> = []
-  for (const block of content) {
-    if (
-      typeof block === "object"
-      && block !== null
-      && "type" in block
-      && (block as { type: unknown }).type === "text"
-      && "text" in block
-      && typeof (block as { text: unknown }).text === "string"
-    ) {
-      parts.push((block as { text: string }).text)
-    }
-  }
-  return parts.join("\n")
-}
-
-export function detectKeywordBudget(
-  messages: ReadonlyArray<KeywordSourceMessage>,
-): number | undefined {
-  // Walk back to the most recent user-authored TEXT message, skipping
-  // user-role turns that contain only tool_result / image blocks (they
-  // appear after every assistant tool_use in agentic loops).
-  let text: string | undefined
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role !== "user") continue
-    const candidate = extractUserText(m.content)
-    if (candidate.trim().length > 0) {
-      text = candidate
-      break
-    }
-  }
-  if (text === undefined) return undefined
-
-  // Strip fenced code blocks so triggers inside code samples don't fire.
-  const scrubbed = text.replaceAll(FENCED_CODE_BLOCK, "")
-
-  for (const { pattern, budget } of THINKING_KEYWORDS) {
-    if (pattern.test(scrubbed)) return budget
-  }
-  return undefined
 }
 
 function translateModelName(model: string): string {
@@ -288,44 +211,28 @@ function mapContent(
     return null
   }
 
-  const hasImage = content.some((block) => block.type === "image")
-  if (!hasImage) {
-    return content
-      .filter(
-        (block): block is AnthropicTextBlock | AnthropicThinkingBlock =>
-          block.type === "text" || block.type === "thinking",
-      )
-      .map((block) => (block.type === "text" ? block.text : block.thinking))
-      .join("\n\n")
-  }
-
-  const contentParts: Array<ContentPart> = []
+  const pieces: Array<WireContentPiece> = []
   for (const block of content) {
     switch (block.type) {
       case "text": {
-        contentParts.push({ type: "text", text: block.text })
-
+        pieces.push({ kind: "text", text: block.text })
         break
       }
       case "thinking": {
-        contentParts.push({ type: "text", text: block.thinking })
-
+        pieces.push({ kind: "text", text: block.thinking })
         break
       }
       case "image": {
-        contentParts.push({
-          type: "image_url",
-          image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
-          },
+        pieces.push({
+          kind: "image",
+          url: `data:${block.source.media_type};base64,${block.source.data}`,
         })
-
         break
       }
       // No default
     }
   }
-  return contentParts
+  return lowerContentParts(pieces)
 }
 
 function translateAnthropicToolsToOpenAI(
@@ -334,14 +241,13 @@ function translateAnthropicToolsToOpenAI(
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map((tool) => ({
-    type: "function",
-    function: {
+  return anthropicTools.map((tool) =>
+    buildFunctionTool({
       name: tool.name,
       description: tool.description,
       parameters: tool.input_schema,
-    },
-  }))
+    }),
+  )
 }
 
 function translateAnthropicToolChoiceToOpenAI(
@@ -412,17 +318,7 @@ export function translateToAnthropic(
     content: [...allTextBlocks, ...allToolUseBlocks],
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
-    usage: {
-      input_tokens:
-        (response.usage?.prompt_tokens ?? 0)
-        - (response.usage?.prompt_tokens_details?.cached_tokens ?? 0),
-      output_tokens: response.usage?.completion_tokens ?? 0,
-      ...(response.usage?.prompt_tokens_details?.cached_tokens
-        !== undefined && {
-        cache_read_input_tokens:
-          response.usage.prompt_tokens_details.cached_tokens,
-      }),
-    },
+    usage: toAnthropicUsage(response.usage),
   }
 }
 
