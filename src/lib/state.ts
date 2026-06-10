@@ -6,6 +6,7 @@ export interface State {
 
   accountType: string
   models?: ModelsResponse
+  fastCapableIds: Set<string>
   vsCodeVersion?: string
 
   manualApprove: boolean
@@ -19,6 +20,7 @@ export interface State {
 
 export const state: State = {
   accountType: "individual",
+  fastCapableIds: new Set(),
   manualApprove: false,
   rateLimitWait: false,
   showToken: false,
