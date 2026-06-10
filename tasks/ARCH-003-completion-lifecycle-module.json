@@ -45,6 +45,11 @@
       "timestamp": "2026-06-11",
       "status": "In progress",
       "note": "Confirmed current code matches spec: isNonStreaming byte-identical in all 3 handlers; gating sequence (checkRateLimit -> ... -> if(manualApprove) awaitApproval) repeated 3x; responses/handler.ts has bespoke errorTypeForStatus called twice; all 3 route.ts wrap handlers in identical try/catch->forwardError. Plan: small surgical shared seams in src/lib/completion-lifecycle.ts (NOT a mega-abstraction); leave the 3 distinct streaming loops untouched."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "STEP 1 (commit 7356629): added src/lib/completion-lifecycle.ts with isNonStreaming (defined once), enterCompletion (rate-limit gate), applyRequestGating (manual-approval gate), and parameterized errorTypeForStatus(status, vocab). STEP 2 (commit pending): repointed all 3 handlers to import these; deleted the 3 local isNonStreaming copies and the bespoke errorTypeForStatus in responses/handler.ts (now calls shared one with vocab=\"anthropic\", byte-identical strings). Streaming loops + chat-completions token/max_tokens logic left handler-local. Gates: bun test 111 pass / 0 fail (responses-stream 16/16, transport-cut preserved), typecheck exit 0, lint exit 0."
     }
   ]
 }
