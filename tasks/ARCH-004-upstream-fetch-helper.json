@@ -1,7 +1,7 @@
 {
   "id": "ARCH-004",
   "title": "Collapse the repeated fetch -> !ok throw -> typed-json pattern into one upstream-fetch helper",
-  "status": "Not started",
+  "status": "Pending Verification",
   "priority": 4,
   "leverage": "medium",
   "risk": "low",
@@ -41,6 +41,16 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. Pattern duplication verified by reading get-copilot-token.ts and confirming the same shape across the services/ layer. Deletion test applied: individual files are shallow, the pattern is the smear."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Implementer started in worktree task/ARCH-004-upstream-fetch-helper. Read all 8 listed files + callers + tests. Baseline gates green (111 pass/0 fail, typecheck clean, lint clean). Plan: add src/lib/request.ts requestJson<T>(url, init, errorMessage) owning fetch + !ok->throw HTTPError + typed json cast; collapse 6 json-returning services (get-copilot-token, get-user, get-device-code, get-copilot-usage, create-embeddings, get-models) to URL+headers+type. FINDINGS: (1) poll-access-token.ts uses !response.ok as a keep-polling signal (sleep+continue), NOT an error -- will LEAVE hand-rolled (wrapping would throw on first not-ready poll and break device flow). (2) create-chat-completions.ts streaming events(response) branch + X-Initiator: out of scope, untouched. (3) get-vscode-version.ts uses response.text()+regex+fallback, not the !ok->throw ritual; correctly not in scope. (4) api-config.ts header builders left alone. Domain return-type interfaces stay co-located in each service."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "Implemented in commit b6abdc8. Added src/lib/request.ts with requestJson<T>(url, init, errorMessage) (fetch + !ok->throw HTTPError + typed json). Collapsed 6 json-returning services to URL+headers+type+message; all domain interfaces (GetCopilotTokenResponse, GithubUserResponse, DeviceCodeResponse, QuotaDetail/QuotaSnapshots/CopilotUsageResponse, EmbeddingResponse+kin, ModelsResponse+kin) remain co-located. create-embeddings.ts pre-fetch copilotToken guard preserved. Added tests/request.test.ts (typed-return, init-forwarding, !ok->HTTPError with message+status). poll-access-token.ts left hand-rolled (verified: !ok is keep-polling, not error). Streaming branch in create-chat-completions.ts untouched. api-config.ts header builders untouched. Gates after change: bun test 114 pass/0 fail (was 111, +3 helper tests), typecheck clean, lint clean. Pre-commit lint hook ran clean, no re-stage needed. Acceptance criteria 1-6 all met. Handing off to verification subagent."
     }
   ]
 }
