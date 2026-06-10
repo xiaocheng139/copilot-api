@@ -98,5 +98,5 @@ test("does not mutate the caller's payload object", async () => {
 
   // The clone must leave the caller's object pristine for logging/reuse.
   expect(payload.model).toBe("claude-opus-4.8-fast")
-  expect((payload as { speed?: string }).speed).toBeUndefined()
+  expect(payload.speed).toBeUndefined()
 })
