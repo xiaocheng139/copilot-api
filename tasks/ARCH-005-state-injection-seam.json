@@ -1,7 +1,7 @@
 {
   "id": "ARCH-005",
   "title": "Give the services a state injection seam and group the state singleton by concern",
-  "status": "In progress",
+  "status": "Pending Verification",
   "priority": 5,
   "leverage": "medium",
   "risk": "medium",
@@ -49,6 +49,16 @@
       "timestamp": "2026-06-11",
       "status": "In progress",
       "note": "Move (A) complete. All 6 services now accept `state: State = defaultState` (singleton aliased to defaultState on import; param named `state` so every existing `state.` body reference is untouched -> minimal diff). Zero production-caller edits needed. Added tests/state-injection.test.ts (2 tests): proves createChatCompletions authenticates with an INJECTED token (Authorization: Bearer injected-token, editor-version vscode/9.9.9) and leaves the module-global singleton unmutated, and that the token guard reads the injected param not the global. Rejection test uses the repo's imperative try/catch convention (expect().rejects trips await-thenable lint). Gates: bun test 113 pass/0 fail (+2), typecheck clean, lint clean (exit 0). Next: evaluate Move (B) concern grouping."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "DECISION: defer Move (B) (concern-grouping) to a follow-up; ship (A) alone. Rationale: (B) is explicitly optional and is a legibility-only win -- the core testability/test-race win is fully delivered by (A). (B) has wide blast radius (reshapes the State interface, rippling to every mutator: token.ts/utils.ts/rate-limit.ts/start.ts/auth.ts, AND every reader: api-config.ts + ~6 route handlers + check-usage.ts, ~16 files) and would churn the very interface (A)'s seam+test depend on. Also found task-spec drift: the solution example lists state.cache.fastCapableIds, but `fastCapableIds` does NOT exist in current state.ts (10 fields, not the 11 stated) -- so (B) needs careful re-derivation, not a mechanical rename. Per coding-rules Simplicity-First/Surgical-Changes and the task's own 'do (A) first, (B) optional' guidance, keeping (A) as a focused reviewable PR is the disciplined call. (B) left for a follow-up task."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "Move (A) implemented, committed (32406aa), and self-checked; deferring optional Move (B). Acceptance criteria status: (A) services accept injected state via default param, production callers unchanged -> MET; (A) test exercises createChatCompletions with injected token/model without mutating module global -> MET (tests/state-injection.test.ts); (B optional concern-grouping) -> intentionally DEFERRED (see prior entry); no new env reads, config still flows via state only -> MET (grep confirms zero process.env/Bun.env in src/); gates -> MET (bun test 113/0, typecheck clean, lint exit 0). Worktree tree clean except gitignored node_modules. Handing to independent verification subagent; NOT setting Done."
     }
   ]
 }
