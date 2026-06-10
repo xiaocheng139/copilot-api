@@ -1,7 +1,7 @@
 {
   "id": "ARCH-001",
   "title": "Extract a deep module owning the Copilot ChatCompletions wire primitives shared by both translators",
-  "status": "Not started",
+  "status": "Pending Verification",
   "priority": 1,
   "leverage": "high",
   "risk": "low",
@@ -37,6 +37,16 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. Duplication verified by reading both translator bodies (non-stream-translation.ts, request-translation.ts) and the three usage sites in messages/stream-translation.ts."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Started in worktree on branch task/ARCH-001-shared-copilot-wire-primitives. Baseline gates green: 111 pass/0 fail, typecheck 0, lint clean. Read all four target files + tests. CONFIRMED duplications: resolveThinkingBudget (non-stream:75-82 vs request:96-104), keyword/anchor floor combine (non-stream:40-48 vs request:152-159), temp/top_p drop + thinking_budget spread (non-stream:62-67 vs request:175-180), function-tool lowering (non-stream:337-344 vs request 'function' case 242-256), content-part lowering (mapContent non-stream:279-329 vs mapResponsesContent request:562-587), Anthropic cached-token usage math (non-stream:416-424, stream:45-53, stream:162-170). DEVIATION from task JSON claim (4): responses/stream-translation.ts:129-140 usage is NOT the same math -- it keeps input_tokens=prompt_tokens (no cached subtraction), adds total_tokens, nests cached under input_tokens_details (ResponsesUsage shape); confirmed by responses-stream.test.ts:419-437. Will unify the 3 Anthropic sites (criterion 5) and leave responses usage shape untouched. Plan: create src/lib/copilot-wire.ts owning the neutral primitives + move detectKeywordBudget there to kill the cross-route import."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "Implemented in commit 25cc19a. Created src/services/copilot/chat-completions-wire.ts (placed beside create-chat-completions.ts where the ChatCompletions shape lives, preserving the routes->services import direction) owning: resolveThinkingBudget, combineBudgetFloor (keyword/explicit floor), applyThinkingBudget (temp/top_p drop + thinking_budget spread), detectKeywordBudget (+ KeywordSourceMessage, moved verbatim), buildFunctionTool (function-tool lowering), lowerContentParts (text/image hasImage gate via neutral WireContentPiece[]), toAnthropicUsage (cached-token subtraction). Both translators rewritten as thin adapters. Updated tests/thinking-keywords.test.ts import to the new home; added tests/copilot-wire.test.ts (20 cases) as the single test surface for the invariants. Acceptance criteria all met -- verified by grep that each primitive is defined exactly once and called from both translators (AC1-5), and that src/routes/responses/ has zero imports from ../messages/* (AC6). Gates green (AC7): bun test 131 pass/0 fail, bun run typecheck exit 0, bun run lint clean. SCOPE NOTE: function-tool lowering also routes the responses local_shell/custom synthetic tools through buildFunctionTool (same {type,function} target) so the shape truly exists once. tool_choice translation and the streaming SSE state machine were left untouched (out_of_scope). DEVIATION (carried from prior entry): the Responses streaming usage reshaping (responses/stream-translation.ts:129-140) was intentionally NOT unified -- it is a genuinely different shape (no cached subtraction; ResponsesUsage with total_tokens + input_tokens_details), so criterion 5's 'cached-token math' is the Anthropic-only subtraction now living once in toAnthropicUsage. Stopping here per TASK.md Rule 3; handing off to an independent verification subagent. NOT setting Done."
     }
   ]
 }
