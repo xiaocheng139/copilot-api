@@ -77,7 +77,9 @@ describe("withFastVariants", () => {
   })
 
   test("the twin is produced by makeTwin (carries other fields)", () => {
-    const out = withFastVariants([{ id: "a", label: "A" }], capable, makeTwin)
+    const input = [{ id: "a", label: "A" }]
+    const out = withFastVariants(input, capable, makeTwin)
+    expect(out[0]).toBe(input[0]) // base passed through by reference, not copied
     expect(out[1]).toEqual({ id: "a-fast", label: "A" })
   })
 })
