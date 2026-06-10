@@ -1,7 +1,7 @@
 {
   "id": "ARCH-003",
   "title": "Extract a deep 'run a translated completion' lifecycle module; shrink the three handlers to wiring",
-  "status": "Not started",
+  "status": "In progress",
   "priority": 3,
   "leverage": "high",
   "risk": "medium",
@@ -40,6 +40,11 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. Handler boilerplate + identical isNonStreaming + inconsistent error envelopes verified by reading all three handlers, server.ts, and lib/error.ts."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Confirmed current code matches spec: isNonStreaming byte-identical in all 3 handlers; gating sequence (checkRateLimit -> ... -> if(manualApprove) awaitApproval) repeated 3x; responses/handler.ts has bespoke errorTypeForStatus called twice; all 3 route.ts wrap handlers in identical try/catch->forwardError. Plan: small surgical shared seams in src/lib/completion-lifecycle.ts (NOT a mega-abstraction); leave the 3 distinct streaming loops untouched."
     }
   ]
 }
