@@ -1,7 +1,7 @@
 {
   "id": "ARCH-005",
   "title": "Give the services a state injection seam and group the state singleton by concern",
-  "status": "Not started",
+  "status": "Done",
   "priority": 5,
   "leverage": "medium",
   "risk": "medium",
@@ -39,6 +39,31 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. state singleton field inventory + mutator/reader sites + the existing parameter-seam in api-config.ts/rate-limit.ts verified by reading state.ts, create-chat-completions.ts, api-config.ts. Split into (A) injection seam and (B) concern grouping; (A) recommended first."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Started in worktree on branch task/ARCH-005-state-injection-seam. Verified file:line claims by reading all 6 service files + api-config.ts/rate-limit.ts (existing parameter-seam pattern: both take state: State). Confirmed via grep that every production caller of createChatCompletions/createEmbeddings/getModels/getCopilotToken/getGitHubUser/getCopilotUsage invokes with NO state arg, so a defaulted `state: State = singleton` param leaves all production callers unchanged (zero caller edits for A). Re-confirmed zero process.env/Bun.env in src/. Plan: (A) add defaulted state param to the 6 services + an injection test; commit; then evaluate (B)."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Move (A) complete. All 6 services now accept `state: State = defaultState` (singleton aliased to defaultState on import; param named `state` so every existing `state.` body reference is untouched -> minimal diff). Zero production-caller edits needed. Added tests/state-injection.test.ts (2 tests): proves createChatCompletions authenticates with an INJECTED token (Authorization: Bearer injected-token, editor-version vscode/9.9.9) and leaves the module-global singleton unmutated, and that the token guard reads the injected param not the global. Rejection test uses the repo's imperative try/catch convention (expect().rejects trips await-thenable lint). Gates: bun test 113 pass/0 fail (+2), typecheck clean, lint clean (exit 0). Next: evaluate Move (B) concern grouping."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "DECISION: defer Move (B) (concern-grouping) to a follow-up; ship (A) alone. Rationale: (B) is explicitly optional and is a legibility-only win -- the core testability/test-race win is fully delivered by (A). (B) has wide blast radius (reshapes the State interface, rippling to every mutator: token.ts/utils.ts/rate-limit.ts/start.ts/auth.ts, AND every reader: api-config.ts + ~6 route handlers + check-usage.ts, ~16 files) and would churn the very interface (A)'s seam+test depend on. Also found task-spec drift: the solution example lists state.cache.fastCapableIds, but `fastCapableIds` does NOT exist in current state.ts (10 fields, not the 11 stated) -- so (B) needs careful re-derivation, not a mechanical rename. Per coding-rules Simplicity-First/Surgical-Changes and the task's own 'do (A) first, (B) optional' guidance, keeping (A) as a focused reviewable PR is the disciplined call. (B) left for a follow-up task."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "Move (A) implemented, committed (32406aa), and self-checked; deferring optional Move (B). Acceptance criteria status: (A) services accept injected state via default param, production callers unchanged -> MET; (A) test exercises createChatCompletions with injected token/model without mutating module global -> MET (tests/state-injection.test.ts); (B optional concern-grouping) -> intentionally DEFERRED (see prior entry); no new env reads, config still flows via state only -> MET (grep confirms zero process.env/Bun.env in src/); gates -> MET (bun test 113/0, typecheck clean, lint exit 0). Worktree tree clean except gitignored node_modules. Handing to independent verification subagent; NOT setting Done."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Done",
+      "note": "Verification by independent subagent (adversarial, ran all gates myself). GATES: `bun test` = 113 pass / 0 fail, exit 0 (baseline main = 111; +2 from the new tests/state-injection.test.ts, the only tests/ file touched, so no existing test weakened/regressed); `bun run typecheck` (tsc) exit 0, no output; `bun run lint` (eslint) exit 0 (only a harmless baseline-browser-mapping data-age notice, not a lint error). PER-CRITERION: (A) injection seam -> MET: all 6 services use `state: State = defaultState` with the singleton aliased as defaultState; grepped every production caller (messages/responses/chat-completions handlers, embeddings/usage routes, utils.ts, token.ts, check-usage.ts) -> all invoke with NO state arg, so they bind the singleton default unchanged, and all compile + 113 tests pass. (A) injecting test -> MET genuinely: tests/state-injection.test.ts builds a fresh State via makeState() and passes it as the 2nd param (never assigns state.*), asserts the outgoing fetch carried `Authorization: Bearer injected-token` and `editor-version: vscode/9.9.9` (injected vsCodeVersion flows through copilotHeaders(state)) and that the module-global state.copilotToken is unchanged after the call; a 2nd test proves the token guard reads the injected param (empty injected state throws). No-env-reads -> MET: grep src/ finds zero process.env/Bun.env and the diff adds none. OUT_OF_SCOPE respected: no per-client isolation; stream-translation files untouched (no `state` local renames). Move (B) deferral is explicitly sanctioned by the spec ('(B optional)', 'do (A) first, treat (B) as optional follow-up') -> acceptable, no concern. VERDICT: all required (A) criteria met, all gates green, within out_of_scope -> Done."
     }
   ]
 }

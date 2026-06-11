@@ -1,8 +1,11 @@
 import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { requestJson } from "~/lib/request"
-import { state } from "~/lib/state"
+import { state as defaultState, type State } from "~/lib/state"
 
-export const createEmbeddings = (payload: EmbeddingRequest) => {
+export const createEmbeddings = (
+  payload: EmbeddingRequest,
+  state: State = defaultState,
+) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
   return requestJson<EmbeddingResponse>(

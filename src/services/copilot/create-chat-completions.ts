@@ -3,10 +3,11 @@ import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
-import { state } from "~/lib/state"
+import { state as defaultState, type State } from "~/lib/state"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
+  state: State = defaultState,
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 

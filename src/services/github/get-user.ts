@@ -1,8 +1,8 @@
 import { GITHUB_API_BASE_URL, standardHeaders } from "~/lib/api-config"
 import { requestJson } from "~/lib/request"
-import { state } from "~/lib/state"
+import { state as defaultState, type State } from "~/lib/state"
 
-export function getGitHubUser() {
+export function getGitHubUser(state: State = defaultState) {
   return requestJson<GithubUserResponse>(
     `${GITHUB_API_BASE_URL}/user`,
     {
