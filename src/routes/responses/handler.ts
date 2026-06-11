@@ -5,14 +5,16 @@ import consola from "consola"
 import { streamSSE } from "hono/streaming"
 import { randomBytes } from "node:crypto"
 
-import { awaitApproval } from "~/lib/approval"
+import {
+  applyRequestGating,
+  enterCompletion,
+  errorTypeForStatus,
+  isNonStreaming,
+} from "~/lib/completion-lifecycle"
 import { HTTPError } from "~/lib/error"
-import { checkRateLimit } from "~/lib/rate-limit"
-import { state } from "~/lib/state"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
-  type ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
 
 import {
@@ -31,7 +33,7 @@ import {
 
 // eslint-disable-next-line max-lines-per-function
 export async function handleResponses(c: Context) {
-  await checkRateLimit(state)
+  await enterCompletion()
 
   const responsesPayload = await c.req.json<ResponsesRequest>()
   consola.debug("Responses request payload:", JSON.stringify(responsesPayload))
@@ -44,7 +46,7 @@ export async function handleResponses(c: Context) {
       return c.json(
         {
           error: {
-            type: errorTypeForStatus(error.status),
+            type: errorTypeForStatus(error.status, "anthropic"),
             message: error.message,
             code: error.code,
           },
@@ -61,9 +63,7 @@ export async function handleResponses(c: Context) {
     JSON.stringify(openAIPayload),
   )
 
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
+  await applyRequestGating()
 
   const ctx: ResponsesStreamContext = {
     responseId: `resp_${randomBytes(12).toString("hex")}`,
@@ -83,7 +83,7 @@ export async function handleResponses(c: Context) {
       return c.json(
         {
           error: {
-            type: errorTypeForStatus(status),
+            type: errorTypeForStatus(status, "anthropic"),
             message: text || error.message,
           },
         },
@@ -160,19 +160,4 @@ export async function handleResponses(c: Context) {
       }
     }
   })
-}
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
-
-function errorTypeForStatus(status: number): string {
-  if (status === 400) return "invalid_request_error"
-  if (status === 401) return "authentication_error"
-  if (status === 403) return "permission_error"
-  if (status === 404) return "not_found_error"
-  if (status === 408 || status === 504) return "timeout_error"
-  if (status === 429) return "rate_limit_error"
-  if (status >= 500) return "api_error"
-  return "api_error"
 }

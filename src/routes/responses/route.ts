@@ -1,15 +1,9 @@
 import { Hono } from "hono"
 
-import { forwardError } from "~/lib/error"
+import { withErrorForwarding } from "~/lib/completion-lifecycle"
 
 import { handleResponses } from "./handler"
 
 export const responseRoutes = new Hono()
 
-responseRoutes.post("/", async (c) => {
-  try {
-    return await handleResponses(c)
-  } catch (error) {
-    return await forwardError(c, error)
-  }
-})
+responseRoutes.post("/", withErrorForwarding(handleResponses))

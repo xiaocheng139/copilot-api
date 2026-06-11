@@ -1,7 +1,7 @@
 {
   "id": "ARCH-003",
   "title": "Extract a deep 'run a translated completion' lifecycle module; shrink the three handlers to wiring",
-  "status": "Not started",
+  "status": "Done",
   "priority": 3,
   "leverage": "high",
   "risk": "medium",
@@ -40,6 +40,26 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. Handler boilerplate + identical isNonStreaming + inconsistent error envelopes verified by reading all three handlers, server.ts, and lib/error.ts."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Confirmed current code matches spec: isNonStreaming byte-identical in all 3 handlers; gating sequence (checkRateLimit -> ... -> if(manualApprove) awaitApproval) repeated 3x; responses/handler.ts has bespoke errorTypeForStatus called twice; all 3 route.ts wrap handlers in identical try/catch->forwardError. Plan: small surgical shared seams in src/lib/completion-lifecycle.ts (NOT a mega-abstraction); leave the 3 distinct streaming loops untouched."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "STEP 1 (commit 7356629): added src/lib/completion-lifecycle.ts with isNonStreaming (defined once), enterCompletion (rate-limit gate), applyRequestGating (manual-approval gate), and parameterized errorTypeForStatus(status, vocab). STEP 2 (commit pending): repointed all 3 handlers to import these; deleted the 3 local isNonStreaming copies and the bespoke errorTypeForStatus in responses/handler.ts (now calls shared one with vocab=\"anthropic\", byte-identical strings). Streaming loops + chat-completions token/max_tokens logic left handler-local. Gates: bun test 111 pass / 0 fail (responses-stream 16/16, transport-cut preserved), typecheck exit 0, lint exit 0."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "STEP 3 (commit 0feaad5): added withErrorForwarding HOF to completion-lifecycle.ts and replaced the identical try/catch->forwardError block in all 4 route definitions (chat-completions, messages '/', messages '/count_tokens', responses). STEP 4 (commit pending): added tests/completion-lifecycle.test.ts (4 tests) covering isNonStreaming true/false and errorTypeForStatus for both vocabularies. All 6 acceptance criteria met: (1) isNonStreaming defined once in completion-lifecycle.ts; (2) rate-limit + manual-approval gating defined once (enterCompletion/applyRequestGating); (3) route try/catch centralized via withErrorForwarding; (4) error vocabulary parameterized, no bespoke inline copy in responses handler; (5) responses transport-cut/[DONE] preserved (tests/responses-stream.test.ts 16/16 pass); (6) final gates: bun test 115 pass / 0 fail, typecheck exit 0, lint exit 0. Out-of-scope respected: chat-completions token-count/max_tokens defaulting and count-tokens-handler untouched. Handing off to independent verification subagent."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Done",
+      "note": "Verification by independent subagent. Gates run fresh in worktree: bun test 115 pass / 0 fail / 211 expect across 8 files (baseline main was 111; +4 = new tests/completion-lifecycle.test.ts; the [error] log lines are intentional error-path console output, not failures); bun run typecheck exit 0 (tsc clean); bun run lint exit 0 (eslint clean). Per-criterion (adversarial grep + read): (1) PASS isNonStreaming has exactly ONE definition site (src/lib/completion-lifecycle.ts:21); all 3 handlers import it; 3 former local copies confirmed deleted in diff. (2) PASS checkRateLimit only called inside enterCompletion; awaitApproval+state.manualApprove gating only inside applyRequestGating; no handler inlines either. (3) PASS withErrorForwarding wraps all 4 in-scope route defs; zero raw try/catch in the 3 in-scope route.ts; residual try/catch only in out-of-scope embeddings/token/usage/models routes (justified, not translated-completion handlers). (4) PASS errorTypeForStatus(status, vocab) lives in lib; responses-handler local copy deleted; both call-sites pass 'anthropic'; output strings byte-identical (old `status>=500 -> api_error` + fallthrough `api_error` collapse to one `return api_error`, same for all inputs). (5) PASS KEY RISK clear: 3 streaming loops left handler-local; responses handler.ts:106-162 streaming section intact (try/catch, receivedAnyChunk, finalizeStream(...,{transportCut:true}), [DONE] break); tests/responses-stream.test.ts 16/16 in isolation incl. 'parallel cut ... emits ONLY response.failed' (dones len 0, response.failed code stream_interrupted_malformed_tool_arguments, no response.completed). (6) PASS gates green. Out-of-scope respected: chat-completions getTokenCount/max_tokens defaulting still handler-local; count-tokens-handler diff empty. Verdict: DONE."
     }
   ]
 }

@@ -3,19 +3,21 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
-import { awaitApproval } from "~/lib/approval"
-import { checkRateLimit } from "~/lib/rate-limit"
+import {
+  applyRequestGating,
+  enterCompletion,
+  isNonStreaming,
+} from "~/lib/completion-lifecycle"
 import { state } from "~/lib/state"
 import { getTokenCount } from "~/lib/tokenizer"
 import { isNullish } from "~/lib/utils"
 import {
   createChatCompletions,
-  type ChatCompletionResponse,
   type ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 
 export async function handleCompletion(c: Context) {
-  await checkRateLimit(state)
+  await enterCompletion()
 
   let payload = await c.req.json<ChatCompletionsPayload>()
   consola.debug("Request payload:", JSON.stringify(payload).slice(-400))
@@ -37,7 +39,7 @@ export async function handleCompletion(c: Context) {
     consola.warn("Failed to calculate token count:", error)
   }
 
-  if (state.manualApprove) await awaitApproval()
+  await applyRequestGating()
 
   if (isNullish(payload.max_tokens)) {
     payload = {
@@ -62,7 +64,3 @@ export async function handleCompletion(c: Context) {
     }
   })
 }
-
-const isNonStreaming = (
-  response: Awaited<ReturnType<typeof createChatCompletions>>,
-): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
