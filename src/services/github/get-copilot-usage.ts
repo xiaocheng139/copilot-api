@@ -1,18 +1,13 @@
 import { GITHUB_API_BASE_URL, githubHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import { requestJson } from "~/lib/request"
 import { state } from "~/lib/state"
 
-export const getCopilotUsage = async (): Promise<CopilotUsageResponse> => {
-  const response = await fetch(`${GITHUB_API_BASE_URL}/copilot_internal/user`, {
-    headers: githubHeaders(state),
-  })
-
-  if (!response.ok) {
-    throw new HTTPError("Failed to get Copilot usage", response)
-  }
-
-  return (await response.json()) as CopilotUsageResponse
-}
+export const getCopilotUsage = (): Promise<CopilotUsageResponse> =>
+  requestJson<CopilotUsageResponse>(
+    `${GITHUB_API_BASE_URL}/copilot_internal/user`,
+    { headers: githubHeaders(state) },
+    "Failed to get Copilot usage",
+  )
 
 export interface QuotaDetail {
   entitlement: number
