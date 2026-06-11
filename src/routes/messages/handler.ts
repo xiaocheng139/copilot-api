@@ -6,6 +6,7 @@ import { streamSSE } from "hono/streaming"
 import { awaitApproval } from "~/lib/approval"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
+import { createStreamAccumulator } from "~/routes/_shared/stream-accumulator"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -61,6 +62,7 @@ export async function handleCompletion(c: Context) {
       contentBlockOpen: false,
       toolCalls: {},
     }
+    const accumulator = createStreamAccumulator()
 
     for await (const rawEvent of response) {
       consola.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
@@ -73,7 +75,11 @@ export async function handleCompletion(c: Context) {
       }
 
       const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-      const events = translateChunkToAnthropicEvents(chunk, streamState)
+      const events = translateChunkToAnthropicEvents(
+        chunk,
+        streamState,
+        accumulator,
+      )
 
       for (const event of events) {
         consola.debug("Translated Anthropic event:", JSON.stringify(event))
