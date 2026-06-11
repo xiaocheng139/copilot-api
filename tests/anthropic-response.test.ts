@@ -355,12 +355,9 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       contentBlockOpen: false,
       toolCalls: {},
     }
+    const accumulator = createStreamAccumulator()
     const translatedStream = openAIStream.flatMap((chunk) =>
-      translateChunkToAnthropicEvents(
-        chunk,
-        streamState,
-        createStreamAccumulator(),
-      ),
+      translateChunkToAnthropicEvents(chunk, streamState, accumulator),
     )
 
     // These tests will fail until the stub is implemented
