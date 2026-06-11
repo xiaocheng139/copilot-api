@@ -6,6 +6,7 @@ import type {
   ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
 
+import { createStreamAccumulator } from "~/routes/_shared/stream-accumulator"
 import { type AnthropicStreamState } from "~/routes/messages/anthropic-types"
 import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
 import { translateChunkToAnthropicEvents } from "~/routes/messages/stream-translation"
@@ -253,8 +254,9 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       contentBlockOpen: false,
       toolCalls: {},
     }
+    const accumulator = createStreamAccumulator()
     const translatedStream = openAIStream.flatMap((chunk) =>
-      translateChunkToAnthropicEvents(chunk, streamState),
+      translateChunkToAnthropicEvents(chunk, streamState, accumulator),
     )
 
     for (const event of translatedStream) {
@@ -353,8 +355,9 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       contentBlockOpen: false,
       toolCalls: {},
     }
+    const accumulator = createStreamAccumulator()
     const translatedStream = openAIStream.flatMap((chunk) =>
-      translateChunkToAnthropicEvents(chunk, streamState),
+      translateChunkToAnthropicEvents(chunk, streamState, accumulator),
     )
 
     // These tests will fail until the stub is implemented

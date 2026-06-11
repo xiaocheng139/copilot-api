@@ -1,7 +1,7 @@
 {
   "id": "ARCH-002",
   "title": "Extract a shared streaming SSE accumulator; let each translator render its own event vocabulary",
-  "status": "Not started",
+  "status": "Done",
   "priority": 2,
   "leverage": "high",
   "risk": "high",
@@ -35,6 +35,21 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. State-machine duplication verified by reading both stream-translation.ts files and AnthropicStreamState vs ResponsesStreamState. Flagged highest-risk; depends on ARCH-001 landing first."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Two prior subagent attempts died mid-exploration with zero commits (this is the 770-line responses translator + the tool-call-index alignment CLAUDE.md flags as the most subtle code in the repo). Main agent (orchestrator) taking over implementation directly, having already read messages/stream-translation.ts, responses/stream-translation.ts (full: chunk loop + finalizeStream + validators + non-stream synthesis), and both state structs. Branched off ARCH-001 (feecbf1) so toAnthropicUsage is available. Plan: STEP 1 neutral foldChunk accumulator (single home of index alignment) + STEP 2 direct tests first, then migrate each translator's tool-detection bookkeeping onto it while keeping per-translator rendering (Anthropic block open/close + immediate input_json_delta; Responses output_item model + buffering + synthetic raising + transport-cut). Verification will still be delegated to an independent subagent per Rule 3."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Pending Verification",
+      "note": "Implementation complete in 3 commits off ARCH-001 base feecbf1: (5a55ca4) src/routes/_shared/stream-accumulator.ts neutral StreamAccumulator + foldChunk + ChunkDelta, with tests/stream-accumulator.test.ts (7 tests incl. two concurrent tool calls at indices 0/1 interleaved across chunks — the alignment subtlety, now testable independent of either SSE renderer); (69342bd) messages translator drives off foldChunk's ChunkDelta, keeping content_block open/close + upstream-index->anthropicBlockIndex mapping + immediate input_json_delta; message_start/finish extracted to helpers so the max-lines/complexity eslint-disable is gone; (4b525b9) responses translator embeds the shared accumulator inside ResponsesStreamState (handler + finalizeStream call sites unchanged), drives detection from foldChunk, keeps Responses render-accumulator/synthetic-raising/transport-cut/validation in responses/; text+tool rendering extracted to helpers so its eslint-disable is gone too. Tool-call index ALIGNMENT (new = id+name at unseen index; later fragments append) now lives ONLY in foldChunk; the translators only consume the aligned ToolCallAccumulator. Gates: bun test 138 pass / 0 fail (131 baseline +7 accumulator tests); bun run typecheck exit 0; bun run lint exit 0. tests/anthropic-response.test.ts updated for the new 3-arg signature (byte-for-byte events preserved); tests/responses-stream.test.ts 16/16 green incl. the malformed-synthetic transport-cut emitting ONLY response.failed. All acceptance_criteria met. Handing to an independent verification subagent per Rule 3; NOT self-promoting to Done."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "Done",
+      "note": "Verification by independent subagent (adversarial; this task was main-agent-implemented). GATES run fresh in worktree against diff base feecbf1: bun test 138 pass / 0 fail / 255 expect; bun run typecheck exit 0; bun run lint exit 0. Baseline at feecbf1 independently re-run = 131 pass / 0 fail, so +7 accumulator tests and NO regression (error-log lines in test output are deliberate error-path assertions, not failures). PER-CRITERION: (1) PASS - foldChunk+StreamAccumulator+ChunkDelta defined in src/routes/_shared/stream-accumulator.ts and BOTH translators import and CALL it (messages/stream-translation.ts:50 foldChunk(accumulator,chunk); responses/stream-translation.ts:138 foldChunk(state.accumulator,chunk)). (2) PASS [KEY] - grep -nE 'tool_calls|\\.id && |function?.name|argumentsBuffer +=' on messages/stream-translation.ts => NO matches; on responses/stream-translation.ts => only hits are lines 733/752 inside translateNonStreamingResponse SYNTHESIZING chunks (explicit index:i) to feed the accumulator, NOT alignment. The new-vs-continuation rule (!acc && tc.id && tc.function?.name) and argumentsBuffer += live ONLY in foldChunk (stream-accumulator.ts:100,113). Index alignment is in exactly one place. (3) PASS - tests/anthropic-response.test.ts 5/5 (only call signature changed to 3-arg + createStreamAccumulator(); asserted event sequences unchanged); tests/responses-stream.test.ts 16/16. (4) PASS [OTHER KEY RISK] - finalizeStream/validateToolCall/synthetic-raising/transport-cut branch all still in responses/stream-translation.ts (NOT moved to shared accumulator); test at line 374 'parallel cut with one valid + one malformed synthetic emits ONLY response.failed' asserts dones.length===0, error.code 'stream_interrupted_malformed_tool_arguments', and response.completed undefined - green. (5) PASS - tests/stream-accumulator.test.ts has the two-concurrent-tool-calls case (indices 0/1, arg fragments interleaved out of order, asserts buffers accumulate independently as {a:2} vs {b:1} with first-seen key order [0,1]) - genuine cross-contamination guard. (6) PASS - all gates green. OUT_OF_SCOPE respected: no request-side primitive changes; wire-visible SSE shapes unchanged (proven by existing stream tests passing unchanged). VERDICT: Done."
     }
   ]
 }

@@ -1,3 +1,7 @@
+import {
+  foldChunk,
+  type StreamAccumulator,
+} from "~/routes/_shared/stream-accumulator"
 import { toAnthropicUsage } from "~/services/copilot/chat-completions-wire"
 import { type ChatCompletionChunk } from "~/services/copilot/create-chat-completions"
 
@@ -17,38 +21,46 @@ function isToolBlockOpen(state: AnthropicStreamState): boolean {
   )
 }
 
-// eslint-disable-next-line max-lines-per-function, complexity
+function messageStartEvent(
+  chunk: ChatCompletionChunk,
+): AnthropicStreamEventData {
+  return {
+    type: "message_start",
+    message: {
+      id: chunk.id,
+      type: "message",
+      role: "assistant",
+      content: [],
+      model: chunk.model,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: toAnthropicUsage(chunk.usage, { outputTokens: 0 }),
+    },
+  }
+}
+
 export function translateChunkToAnthropicEvents(
   chunk: ChatCompletionChunk,
   state: AnthropicStreamState,
+  accumulator: StreamAccumulator,
 ): Array<AnthropicStreamEventData> {
   const events: Array<AnthropicStreamEventData> = []
+
+  // Fold the chunk into the neutral accumulator first; render from the delta.
+  const delta = foldChunk(accumulator, chunk)
 
   if (chunk.choices.length === 0) {
     return events
   }
 
   const choice = chunk.choices[0]
-  const { delta } = choice
 
   if (!state.messageStartSent) {
-    events.push({
-      type: "message_start",
-      message: {
-        id: chunk.id,
-        type: "message",
-        role: "assistant",
-        content: [],
-        model: chunk.model,
-        stop_reason: null,
-        stop_sequence: null,
-        usage: toAnthropicUsage(chunk.usage, { outputTokens: 0 }),
-      },
-    })
+    events.push(messageStartEvent(chunk))
     state.messageStartSent = true
   }
 
-  if (delta.content) {
+  if (delta.textDelta !== undefined) {
     if (isToolBlockOpen(state)) {
       // A tool block was open, so close it before starting a text block.
       events.push({
@@ -76,87 +88,96 @@ export function translateChunkToAnthropicEvents(
       index: state.contentBlockIndex,
       delta: {
         type: "text_delta",
-        text: delta.content,
+        text: delta.textDelta,
       },
     })
   }
 
-  if (delta.tool_calls) {
-    for (const toolCall of delta.tool_calls) {
-      if (toolCall.id && toolCall.function?.name) {
-        // New tool call starting.
-        if (state.contentBlockOpen) {
-          // Close any previously open block.
-          events.push({
-            type: "content_block_stop",
-            index: state.contentBlockIndex,
-          })
-          state.contentBlockIndex++
-          state.contentBlockOpen = false
-        }
-
-        const anthropicBlockIndex = state.contentBlockIndex
-        state.toolCalls[toolCall.index] = {
-          id: toolCall.id,
-          name: toolCall.function.name,
-          anthropicBlockIndex,
-        }
-
-        events.push({
-          type: "content_block_start",
-          index: anthropicBlockIndex,
-          content_block: {
-            type: "tool_use",
-            id: toolCall.id,
-            name: toolCall.function.name,
-            input: {},
-          },
-        })
-        state.contentBlockOpen = true
-      }
-
-      if (toolCall.function?.arguments) {
-        const toolCallInfo = state.toolCalls[toolCall.index]
-        // Tool call can still be empty
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (toolCallInfo) {
-          events.push({
-            type: "content_block_delta",
-            index: toolCallInfo.anthropicBlockIndex,
-            delta: {
-              type: "input_json_delta",
-              partial_json: toolCall.function.arguments,
-            },
-          })
-        }
-      }
-    }
-  }
-
-  if (choice.finish_reason) {
+  // New tool calls (id + name arrived this chunk): open an Anthropic tool_use
+  // block for each, mapping the upstream tool index to its block index.
+  for (const started of delta.toolStarts) {
     if (state.contentBlockOpen) {
+      // Close any previously open block.
       events.push({
         type: "content_block_stop",
         index: state.contentBlockIndex,
       })
+      state.contentBlockIndex++
       state.contentBlockOpen = false
     }
 
-    events.push(
-      {
-        type: "message_delta",
-        delta: {
-          stop_reason: mapOpenAIStopReasonToAnthropic(choice.finish_reason),
-          stop_sequence: null,
-        },
-        usage: toAnthropicUsage(chunk.usage),
+    const anthropicBlockIndex = state.contentBlockIndex
+    state.toolCalls[started.index] = {
+      id: started.id ?? "",
+      name: started.name ?? "",
+      anthropicBlockIndex,
+    }
+
+    events.push({
+      type: "content_block_start",
+      index: anthropicBlockIndex,
+      content_block: {
+        type: "tool_use",
+        id: started.id ?? "",
+        name: started.name ?? "",
+        input: {},
       },
-      {
-        type: "message_stop",
-      },
-    )
+    })
+    state.contentBlockOpen = true
   }
 
+  // Argument fragments: render an input_json_delta against the block index the
+  // upstream tool index maps to.
+  for (const { index, delta: partialJson } of delta.toolArgDeltas) {
+    const toolCallInfo = state.toolCalls[index]
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if (toolCallInfo) {
+      events.push({
+        type: "content_block_delta",
+        index: toolCallInfo.anthropicBlockIndex,
+        delta: {
+          type: "input_json_delta",
+          partial_json: partialJson,
+        },
+      })
+    }
+  }
+
+  if (choice.finish_reason) {
+    events.push(...finishEvents(state, choice.finish_reason, chunk.usage))
+  }
+
+  return events
+}
+
+function finishEvents(
+  state: AnthropicStreamState,
+  finishReason: NonNullable<
+    ChatCompletionChunk["choices"][number]["finish_reason"]
+  >,
+  usage: ChatCompletionChunk["usage"],
+): Array<AnthropicStreamEventData> {
+  const events: Array<AnthropicStreamEventData> = []
+  if (state.contentBlockOpen) {
+    events.push({
+      type: "content_block_stop",
+      index: state.contentBlockIndex,
+    })
+    state.contentBlockOpen = false
+  }
+  events.push(
+    {
+      type: "message_delta",
+      delta: {
+        stop_reason: mapOpenAIStopReasonToAnthropic(finishReason),
+        stop_sequence: null,
+      },
+      usage: toAnthropicUsage(usage),
+    },
+    {
+      type: "message_stop",
+    },
+  )
   return events
 }
 

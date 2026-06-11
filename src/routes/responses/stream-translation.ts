@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto"
 
 import {
+  createStreamAccumulator,
+  foldChunk,
+  type ChunkDelta,
+  type StreamAccumulator,
+} from "~/routes/_shared/stream-accumulator"
+import {
   type ChatCompletionChunk,
   type ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
@@ -55,6 +61,8 @@ export interface ResponsesStreamState {
   usage?: ResponsesUsage
   /** Captured finish_reason. */
   finishReason: ChatCompletionChunk["choices"][number]["finish_reason"] | null
+  /** Neutral cross-format accumulation (text + index-aligned tool calls). */
+  accumulator: StreamAccumulator
 }
 
 export interface ResponsesStreamContext {
@@ -71,6 +79,7 @@ export function createInitialStreamState(): ResponsesStreamState {
     toolCalls: new Map(),
     finalized: false,
     finishReason: null,
+    accumulator: createStreamAccumulator(),
   }
 }
 
@@ -104,7 +113,6 @@ function pickFamily(
 
 // ----- Per-chunk translation ----------------------------------------------
 
-// eslint-disable-next-line max-lines-per-function, complexity
 export function translateChunkToResponsesEvents(
   chunk: ChatCompletionChunk,
   state: ResponsesStreamState,
@@ -126,6 +134,9 @@ export function translateChunkToResponsesEvents(
     state.responseCreatedSent = true
   }
 
+  // Fold into the neutral accumulator; render Responses events from the delta.
+  const folded = foldChunk(state.accumulator, chunk)
+
   if (chunk.usage) {
     state.usage = {
       input_tokens: chunk.usage.prompt_tokens,
@@ -143,90 +154,121 @@ export function translateChunkToResponsesEvents(
     return events
   }
   const choice = chunk.choices[0]
-  const { delta } = choice
 
-  // ----- Text delta --------------------------------------------------------
-  if (typeof delta.content === "string" && delta.content.length > 0) {
-    if (!state.message) {
-      const itemId = makeId("message")
-      state.message = {
-        outputIndex: state.nextOutputIndex,
-        itemId,
-        textBuffer: "",
-        emittedAdded: false,
-        done: false,
-      }
-      state.nextOutputIndex++
-    }
-    if (!state.message.emittedAdded) {
-      events.push({
-        type: "response.output_item.added",
-        output_index: state.message.outputIndex,
-        item: buildMessageItem(state.message.itemId, "", "in_progress"),
-      })
-      state.message.emittedAdded = true
-    }
-    state.message.textBuffer += delta.content
-    events.push({
-      type: "response.output_text.delta",
-      item_id: state.message.itemId,
-      output_index: state.message.outputIndex,
-      content_index: 0,
-      delta: delta.content,
-    })
+  if (folded.textDelta !== undefined) {
+    events.push(...renderTextDelta(folded.textDelta, state))
   }
-
-  // ----- Tool-call deltas --------------------------------------------------
-  if (delta.tool_calls) {
-    for (const tc of delta.tool_calls) {
-      let acc = state.toolCalls.get(tc.index)
-      if (!acc && tc.id && tc.function?.name) {
-        const name = tc.function.name
-        const synthetic = ctx.syntheticToolMap.get(name)
-        const family = pickFamily(synthetic?.family)
-        acc = {
-          outputIndex: state.nextOutputIndex,
-          itemId: makeId(family),
-          callId: tc.id,
-          name,
-          argumentsBuffer: "",
-          emittedAdded: false,
-          done: false,
-        }
-        state.nextOutputIndex++
-        state.toolCalls.set(tc.index, acc)
-      }
-      if (!acc) continue
-
-      if (!acc.emittedAdded) {
-        const item = buildPlaceholderToolItem(acc, ctx)
-        if (item) {
-          events.push({
-            type: "response.output_item.added",
-            output_index: acc.outputIndex,
-            item,
-          })
-          acc.emittedAdded = true
-        }
-      }
-
-      if (tc.function?.arguments) {
-        acc.argumentsBuffer += tc.function.arguments
-        events.push({
-          type: "response.function_call_arguments.delta",
-          item_id: acc.itemId,
-          output_index: acc.outputIndex,
-          delta: tc.function.arguments,
-        })
-      }
-    }
-  }
+  events.push(...renderToolCalls(folded, state, ctx))
 
   // ----- Finalization ------------------------------------------------------
   if (choice.finish_reason && !state.finalized) {
     state.finalized = true
     state.finishReason = choice.finish_reason
     events.push(...finalizeStream(state, ctx))
+  }
+
+  return events
+}
+
+// Render the message output item + a text delta from a folded text fragment.
+function renderTextDelta(
+  textDelta: string,
+  state: ResponsesStreamState,
+): Array<ResponsesStreamEvent> {
+  const events: Array<ResponsesStreamEvent> = []
+  if (!state.message) {
+    const itemId = makeId("message")
+    state.message = {
+      outputIndex: state.nextOutputIndex,
+      itemId,
+      textBuffer: "",
+      emittedAdded: false,
+      done: false,
+    }
+    state.nextOutputIndex++
+  }
+  if (!state.message.emittedAdded) {
+    events.push({
+      type: "response.output_item.added",
+      output_index: state.message.outputIndex,
+      item: buildMessageItem(state.message.itemId, "", "in_progress"),
+    })
+    state.message.emittedAdded = true
+  }
+  state.message.textBuffer += textDelta
+  events.push({
+    type: "response.output_text.delta",
+    item_id: state.message.itemId,
+    output_index: state.message.outputIndex,
+    content_index: 0,
+    delta: textDelta,
+  })
+  return events
+}
+
+// Register Responses render-accumulators for newly started tool calls (index
+// alignment + arg buffering already done by foldChunk) and emit
+// output_item.added on first sighting + function_call_arguments.delta events.
+function renderToolCalls(
+  folded: ChunkDelta,
+  state: ResponsesStreamState,
+  ctx: ResponsesStreamContext,
+): Array<ResponsesStreamEvent> {
+  const events: Array<ResponsesStreamEvent> = []
+
+  // Starts emit output_item.added on first sighting (in upstream tool order).
+  for (const started of folded.toolStarts) {
+    const name = started.name ?? ""
+    const synthetic = ctx.syntheticToolMap.get(name)
+    const family = pickFamily(synthetic?.family)
+    const acc: ToolCallAccumulator = {
+      outputIndex: state.nextOutputIndex,
+      itemId: makeId(family),
+      callId: started.id ?? "",
+      name,
+      argumentsBuffer: "",
+      emittedAdded: false,
+      done: false,
+    }
+    state.nextOutputIndex++
+    state.toolCalls.set(started.index, acc)
+
+    const item = buildPlaceholderToolItem(acc, ctx)
+    if (item) {
+      events.push({
+        type: "response.output_item.added",
+        output_index: acc.outputIndex,
+        item,
+      })
+      acc.emittedAdded = true
+    }
+  }
+
+  for (const { index, delta: argDelta } of folded.toolArgDeltas) {
+    const acc = state.toolCalls.get(index)
+    if (!acc) continue
+
+    // Retry the added emission for a placeholder that was undefined at start
+    // (e.g. an undeclared __cp_* name); arguments still flow regardless.
+    if (!acc.emittedAdded) {
+      const item = buildPlaceholderToolItem(acc, ctx)
+      if (item) {
+        events.push({
+          type: "response.output_item.added",
+          output_index: acc.outputIndex,
+          item,
+        })
+        acc.emittedAdded = true
+      }
+    }
+
+    acc.argumentsBuffer += argDelta
+    events.push({
+      type: "response.function_call_arguments.delta",
+      item_id: acc.itemId,
+      output_index: acc.outputIndex,
+      delta: argDelta,
+    })
   }
 
   return events
