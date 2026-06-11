@@ -1,3 +1,4 @@
+import { FAST_SUFFIX, parseFastModel } from "~/lib/fast-model"
 import {
   applyThinkingBudget,
   buildFunctionTool,
@@ -69,7 +70,17 @@ export function translateToOpenAI(
   }
 }
 
-function translateModelName(model: string): string {
+export function translateModelName(model: string): string {
+  // Preserve a `-fast` suffix across translation: strip it, translate the base
+  // model, then re-append. Otherwise the hyphen-anchored collapse below would
+  // swallow `-fast` (e.g. claude-opus-4-20250514-fast -> claude-opus-4) before
+  // it reaches the CAPI chokepoint, where parseFastModel engages fast mode.
+  const { baseModel, isFast } = parseFastModel(model)
+  const translated = translateBaseModelName(baseModel)
+  return isFast ? `${translated}${FAST_SUFFIX}` : translated
+}
+
+function translateBaseModelName(model: string): string {
   // Subagent requests use a specific model number which Copilot doesn't support
   if (model.startsWith("claude-sonnet-4-")) {
     return model.replace(/^claude-sonnet-4-.*/, "claude-sonnet-4")

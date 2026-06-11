@@ -6,12 +6,17 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import { FAST_SUFFIX, withFastVariants } from "./lib/fast-model"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { setupCopilotToken, setupGitHubToken } from "./lib/token"
-import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
+import {
+  cacheFastCapableIds,
+  cacheModels,
+  cacheVSCodeVersion,
+} from "./lib/utils"
 import { server } from "./server"
 
 interface RunServerOptions {
@@ -59,6 +64,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   await setupCopilotToken()
   await cacheModels()
+  await cacheFastCapableIds()
 
   consola.info(
     `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
@@ -69,11 +75,17 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (options.claudeCode) {
     invariant(state.models, "Models should be loaded by now")
 
+    const modelOptions = withFastVariants(
+      state.models.data,
+      state.fastCapableIds,
+      (base) => ({ ...base, id: `${base.id}${FAST_SUFFIX}` }),
+    ).map((model) => model.id)
+
     const selectedModel = await consola.prompt(
       "Select a model to use with Claude Code",
       {
         type: "select",
-        options: state.models.data.map((model) => model.id),
+        options: modelOptions,
       },
     )
 
@@ -81,7 +93,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
       "Select a small model to use with Claude Code",
       {
         type: "select",
-        options: state.models.data.map((model) => model.id),
+        options: modelOptions,
       },
     )
 
