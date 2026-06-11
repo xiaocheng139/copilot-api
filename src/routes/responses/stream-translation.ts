@@ -780,7 +780,8 @@ export function translateNonStreamingResponse(
   // An assistant turn whose content is exactly "" is a legitimate empty text
   // item. The streaming text path intentionally ignores zero-length deltas (to
   // skip empty leading chunks), so seed the message item directly here rather
-  // than relax that gate — keeps the non-streaming output_item.added/done pair.
+  // than relax that gate. emittedAdded is pre-set, so no output_item.added is
+  // emitted for this empty item; finalizeStream still emits its output_item.done.
   if (choice.message.content === "") {
     state.message = {
       outputIndex: state.nextOutputIndex,

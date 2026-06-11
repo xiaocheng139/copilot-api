@@ -1,9 +1,22 @@
-import { describe, test, expect } from "bun:test"
+import type { Hono } from "hono"
+
+import { describe, test, expect, beforeAll, mock } from "bun:test"
 
 import type { Model } from "../src/services/copilot/get-models"
 
 import { state } from "../src/lib/state"
-import { modelRoutes } from "../src/routes/models/route"
+
+// Importing the route transitively pulls in get-vscode-version.ts, which runs a
+// top-level `await getVSCodeVersion()` (a network fetch) at module load. Mock
+// fetch BEFORE that import so the suite stays deterministic and offline.
+let modelRoutes: Hono
+
+beforeAll(async () => {
+  const fetchMock = mock(() => Promise.resolve(new Response("pkgver=1.104.3")))
+  // @ts-expect-error - Mock fetch doesn't implement all fetch properties
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock
+  ;({ modelRoutes } = await import("../src/routes/models/route"))
+})
 
 function makeModel(id: string, name: string, vendor = "anthropic"): Model {
   return {
