@@ -3,6 +3,7 @@ import { events } from "fetch-event-stream"
 
 import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
+import { FAST_BETA_HEADER, parseFastModel } from "~/lib/fast-model"
 import { state as defaultState, type State } from "~/lib/state"
 
 export const createChatCompletions = async (
@@ -29,10 +30,18 @@ export const createChatCompletions = async (
     "X-Initiator": isAgentCall ? "agent" : "user",
   }
 
+  // Fast-mode translation: a `-fast` model id maps to the same Copilot model
+  // with a `speed: "fast"` body flag + beta header. Clone (never mutate) the
+  // caller's payload — it originates in a translator and may be logged/reused.
+  const { baseModel, isFast } = parseFastModel(payload.model)
+  const upstreamPayload =
+    isFast ? { ...payload, model: baseModel, speed: "fast" } : payload
+  if (isFast) headers["anthropic-beta"] = FAST_BETA_HEADER
+
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",
     headers,
-    body: JSON.stringify(payload),
+    body: JSON.stringify(upstreamPayload),
   })
 
   if (!response.ok) {
@@ -154,6 +163,10 @@ export interface ChatCompletionsPayload {
   // IEndpointBody.thinking_budget). Flat top-level integer; Copilot's broker
   // forwards it as Anthropic's `thinking.budget_tokens` upstream.
   thinking_budget?: number | null
+
+  // GitHub Copilot fast-mode flag. Injected by createChatCompletions when the
+  // inbound model id carried a `-fast` suffix; not set by translators.
+  speed?: string | null
 }
 
 export interface Tool {

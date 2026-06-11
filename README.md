@@ -382,6 +382,34 @@ alias cct='MAX_THINKING_TOKENS=10000 claude'       # think
 alias ccu='MAX_THINKING_TOKENS=31999 claude'       # ultrathink
 ```
 
+### Fast Mode (Claude models)
+
+GitHub Copilot offers a low-latency "fast" variant for some Claude models (currently `claude-opus-4.6`, `claude-opus-4.7`, `claude-opus-4.8`). To use it, append `-fast` to the model id — no other configuration is required.
+
+Set it via the `ANTHROPIC_MODEL` env var when launching Claude Code:
+
+```sh
+ANTHROPIC_MODEL=claude-opus-4.8-fast claude
+```
+
+Or persist it in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "claude-opus-4.8-fast"
+  }
+}
+```
+
+Notes:
+
+- The proxy strips the `-fast` suffix, forwards the base model to Copilot, and adds the `speed: "fast"` request flag plus the `anthropic-beta: fast-mode-2026-02-01` header that engages fast mode. Both ids reach the **same** Copilot model.
+- The `-fast` variants also appear in the `GET /models` list and the `--claude-code` model picker, for fast-capable models only.
+- The fast-capable set is discovered from [models.dev](https://models.dev) at startup. If models.dev is unreachable, the `-fast` variants are omitted from the listing, but a hardcoded `-fast` model id **still engages fast mode** — translation is independent of discovery.
+
 ## Running from Source
 
 The project can be run from source in several ways:

@@ -5,9 +5,13 @@ import {
   createInitialStreamState,
   finalizeStream,
   translateChunkToResponsesEvents,
+  translateNonStreamingResponse,
   type ResponsesStreamContext,
 } from "../src/routes/responses/stream-translation"
-import { type ChatCompletionChunk } from "../src/services/copilot/create-chat-completions"
+import {
+  type ChatCompletionChunk,
+  type ChatCompletionResponse,
+} from "../src/services/copilot/create-chat-completions"
 
 function ctx(map: SyntheticToolMap = new Map()): ResponsesStreamContext {
   return {
@@ -45,6 +49,27 @@ function runChunks(
     events.push(...translateChunkToResponsesEvents(ch, state, c))
   }
   return { state, events }
+}
+
+// Accumulate one text chunk, then finalize, and return the response.completed
+// event (under either normal or transport-cut finalization).
+function finalizeFromText(options: { transportCut?: boolean } = {}) {
+  const state = createInitialStreamState()
+  const c = ctx()
+  const events = [
+    ...translateChunkToResponsesEvents(chunk({ content: "partial" }), state, c),
+    ...finalizeStream(state, c, options),
+  ]
+  return events.find((e) => e.type === "response.completed")
+}
+
+// Pull the status of the first message-typed output_item.done event, if any.
+function messageDoneStatus(
+  events: ReturnType<typeof finalizeStream>,
+): string | undefined {
+  const done = events.find((e) => e.type === "response.output_item.done")
+  if (done?.type !== "response.output_item.done") return undefined
+  return done.item.type === "message" ? done.item.status : undefined
 }
 
 describe("stream translation - text only", () => {
@@ -434,5 +459,62 @@ describe("stream translation - usage propagation", () => {
         total_tokens: 15,
       })
     }
+  })
+})
+
+describe("stream translation - [DONE] without finish_reason finalizes completed", () => {
+  // The handler finalizes on a terminating [DONE] by calling finalizeStream
+  // with no transportCut option. This pins that this path yields a *completed*
+  // response (spec: "null + [DONE] -> completed"), not an incomplete one.
+  test("default finalize (no transportCut) on accumulated text -> completed", () => {
+    const state = createInitialStreamState()
+    const c = ctx()
+    const events = [
+      ...translateChunkToResponsesEvents(chunk({ content: "hello" }), state, c),
+      ...finalizeStream(state, c),
+    ]
+    const completed = events.find((e) => e.type === "response.completed")
+    expect(completed).toBeDefined()
+    if (completed?.type === "response.completed") {
+      expect(completed.response.status).toBe("completed")
+    }
+    // The message item itself is completed, not incomplete.
+    expect(messageDoneStatus(events)).toBe("completed")
+  })
+
+  test("default finalize differs from transportCut finalize (completed vs incomplete)", () => {
+    const normal = finalizeFromText()
+    const cut = finalizeFromText({ transportCut: true })
+    if (normal?.type === "response.completed") {
+      expect(normal.response.status).toBe("completed")
+    }
+    if (cut?.type === "response.completed") {
+      expect(cut.response.status).toBe("incomplete")
+    }
+  })
+})
+
+describe("stream translation - non-streaming empty-string content", () => {
+  // An assistant turn with content === "" is a legitimate (empty) text item and
+  // must still be emitted as a message item, not silently dropped.
+  test('content: "" still emits a message output item', () => {
+    const response: ChatCompletionResponse = {
+      id: "cmpl_empty",
+      object: "chat.completion",
+      created: 0,
+      model: "gpt-5",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "" },
+          logprobs: null,
+          finish_reason: "stop",
+        },
+      ],
+    }
+    const envelope = translateNonStreamingResponse(response, ctx())
+    expect(envelope.status).toBe("completed")
+    const messageItems = envelope.output.filter((o) => o.type === "message")
+    expect(messageItems).toHaveLength(1)
   })
 })

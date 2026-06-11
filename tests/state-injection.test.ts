@@ -26,6 +26,7 @@ const installFetchMock = () => {
 
 const makeState = (overrides: Partial<State> = {}): State => ({
   accountType: "individual",
+  fastCapableIds: new Set(),
   manualApprove: false,
   rateLimitWait: false,
   showToken: false,
