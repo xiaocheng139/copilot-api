@@ -1,5 +1,4 @@
 import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
-import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
 import { requestJson } from "~/lib/request"
 import { state as defaultState, type State } from "~/lib/state"
 
