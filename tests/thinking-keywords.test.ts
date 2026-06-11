@@ -6,10 +6,9 @@ import type {
   AnthropicUserMessage,
 } from "~/routes/messages/anthropic-types"
 
-import {
-  detectKeywordBudget,
-  translateToOpenAI,
-} from "../src/routes/messages/non-stream-translation"
+import { detectKeywordBudget } from "~/services/copilot/chat-completions-wire"
+
+import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
 
 const userText = (text: string): AnthropicUserMessage => ({
   role: "user",
