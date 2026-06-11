@@ -1,7 +1,7 @@
 {
   "id": "ARCH-002",
   "title": "Extract a shared streaming SSE accumulator; let each translator render its own event vocabulary",
-  "status": "Not started",
+  "status": "In progress",
   "priority": 2,
   "leverage": "high",
   "risk": "high",
@@ -35,6 +35,11 @@
       "timestamp": "2026-06-10",
       "status": "Not started",
       "note": "Task created from improve-codebase-architecture review. State-machine duplication verified by reading both stream-translation.ts files and AnthropicStreamState vs ResponsesStreamState. Flagged highest-risk; depends on ARCH-001 landing first."
+    },
+    {
+      "timestamp": "2026-06-11",
+      "status": "In progress",
+      "note": "Two prior subagent attempts died mid-exploration with zero commits (this is the 770-line responses translator + the tool-call-index alignment CLAUDE.md flags as the most subtle code in the repo). Main agent (orchestrator) taking over implementation directly, having already read messages/stream-translation.ts, responses/stream-translation.ts (full: chunk loop + finalizeStream + validators + non-stream synthesis), and both state structs. Branched off ARCH-001 (feecbf1) so toAnthropicUsage is available. Plan: STEP 1 neutral foldChunk accumulator (single home of index alignment) + STEP 2 direct tests first, then migrate each translator's tool-detection bookkeeping onto it while keeping per-translator rendering (Anthropic block open/close + immediate input_json_delta; Responses output_item model + buffering + synthetic raising + transport-cut). Verification will still be delegated to an independent subagent per Rule 3."
     }
   ]
 }
