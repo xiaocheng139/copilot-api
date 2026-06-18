@@ -58,18 +58,22 @@ export const createChatCompletions = async (
   let response = await sendRequest()
 
   // Auto-recover from a stale token: refresh once and retry the request a
-  // single time. If the refresh itself fails, skip the (pointless) retry and
-  // surface the original auth error via the !response.ok handler below.
+  // single time. Only the refresh is guarded — if it fails we skip the
+  // (pointless) retry and surface the original auth error below. A retry that
+  // itself throws (network error, abort) propagates normally, exactly as the
+  // original single-attempt call did.
   if (!response.ok && AUTH_FAILURE_STATUSES.has(response.status)) {
     consola.warn(
       `Copilot returned ${response.status}; refreshing token and retrying once`,
     )
+    let refreshed = false
     try {
       await refreshCopilotToken(state)
-      response = await sendRequest()
+      refreshed = true
     } catch (error) {
-      consola.error("Copilot token refresh failed during retry:", error)
+      consola.error("Copilot token refresh failed:", error)
     }
+    if (refreshed) response = await sendRequest()
   }
 
   if (!response.ok) {

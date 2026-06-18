@@ -1,4 +1,4 @@
-import { test, expect, mock, beforeEach } from "bun:test"
+import { test, expect, mock, beforeEach, afterEach } from "bun:test"
 
 import type { State } from "../src/lib/state"
 import type { ChatCompletionsPayload } from "../src/services/copilot/create-chat-completions"
@@ -110,8 +110,17 @@ const captureError = async (run: () => Promise<unknown>): Promise<unknown> => {
   throw new Error("expected the call to throw, but it resolved")
 }
 
+// mock.restore() resets Bun mocks but does NOT undo a direct
+// `globalThis.fetch = …` assignment, so capture the real fetch and put it back
+// after each test to keep this mock from leaking into other test files.
+const originalFetch = globalThis.fetch
+
 beforeEach(() => {
   mock.restore()
+})
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
 })
 
 test("401 on the request path refreshes the token and retries once, then succeeds", async () => {
