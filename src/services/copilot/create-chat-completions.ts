@@ -5,6 +5,14 @@ import { copilotHeaders, copilotBaseUrl } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { FAST_BETA_HEADER, parseFastModel } from "~/lib/fast-model"
 import { state as defaultState, type State } from "~/lib/state"
+import { refreshCopilotToken } from "~/lib/token"
+
+// Copilot rejects an expired IDE/Copilot token with one of these statuses. On
+// the request path this happens when the proactive refresh timer was frozen by
+// a host suspend/resume, so the in-memory token went stale before the timer
+// could rotate it. We refresh once and retry, rather than surfacing the error
+// and relying on a crash + process-manager restart to recover.
+const AUTH_FAILURE_STATUSES = new Set([401, 403])
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -24,25 +32,56 @@ export const createChatCompletions = async (
     ["assistant", "tool"].includes(msg.role),
   )
 
-  // Build headers and add X-Initiator
-  const headers: Record<string, string> = {
-    ...copilotHeaders(state, enableVision),
-    "X-Initiator": isAgentCall ? "agent" : "user",
-  }
-
   // Fast-mode translation: a `-fast` model id maps to the same Copilot model
   // with a `speed: "fast"` body flag + beta header. Clone (never mutate) the
   // caller's payload — it originates in a translator and may be logged/reused.
   const { baseModel, isFast } = parseFastModel(payload.model)
   const upstreamPayload =
     isFast ? { ...payload, model: baseModel, speed: "fast" } : payload
-  if (isFast) headers["anthropic-beta"] = FAST_BETA_HEADER
 
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(upstreamPayload),
-  })
+  // Build headers fresh per attempt so a retry picks up the refreshed token
+  // (copilotHeaders reads state.copilotToken) and a new x-request-id.
+  const sendRequest = () => {
+    const headers: Record<string, string> = {
+      ...copilotHeaders(state, enableVision),
+      "X-Initiator": isAgentCall ? "agent" : "user",
+    }
+    if (isFast) headers["anthropic-beta"] = FAST_BETA_HEADER
+
+    return fetch(`${copilotBaseUrl(state)}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(upstreamPayload),
+    })
+  }
+
+  let response = await sendRequest()
+
+  // Auto-recover from a stale token: refresh once and retry the request a
+  // single time. Only the refresh is guarded — if it fails we skip the
+  // (pointless) retry and surface the original auth error below. A retry that
+  // itself throws (network error, abort) propagates normally, exactly as the
+  // original single-attempt call did.
+  if (!response.ok && AUTH_FAILURE_STATUSES.has(response.status)) {
+    consola.warn(
+      `Copilot returned ${response.status}; refreshing token before retrying`,
+    )
+    let refreshed = false
+    try {
+      await refreshCopilotToken(state)
+      refreshed = true
+    } catch (error) {
+      consola.error("Copilot token refresh failed; not retrying:", error)
+    }
+    if (refreshed) {
+      consola.warn("Token refreshed; retrying request once")
+      // Release the discarded first response's body so fetch can reuse the
+      // connection instead of leaking it (the retry replaces `response`, and
+      // unlike the error path nothing else consumes this body).
+      await response.body?.cancel()
+      response = await sendRequest()
+    }
+  }
 
   if (!response.ok) {
     consola.error("Failed to create chat completions", response)
