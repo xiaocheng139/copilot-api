@@ -75,6 +75,10 @@ export const createChatCompletions = async (
     }
     if (refreshed) {
       consola.warn("Token refreshed; retrying request once")
+      // Release the discarded first response's body so fetch can reuse the
+      // connection instead of leaking it (the retry replaces `response`, and
+      // unlike the error path nothing else consumes this body).
+      await response.body?.cancel()
       response = await sendRequest()
     }
   }

@@ -22,6 +22,7 @@ interface MockResponse {
   ok: boolean
   status: number
   json: () => unknown
+  body?: { cancel: () => Promise<void> }
 }
 
 const ok = (): MockResponse => ({
@@ -79,6 +80,7 @@ const installFetchMock = (
         ok: r.ok,
         status: r.status,
         headers: new Headers(),
+        body: r.body,
         text: () => Promise.resolve(""),
         json: () => Promise.resolve(r.json()),
       } as unknown as Response)
@@ -145,6 +147,25 @@ test("401 on the request path refreshes the token and retries once, then succeed
   expect(authHeaderOf(callsTo(fetchMock, CHAT_URL)[1])).toBe(
     "Bearer fresh-token",
   )
+})
+
+test("the discarded first response's body is cancelled before the retry", async () => {
+  // The first 401 response is dropped when we retry; its body stream must be
+  // released so fetch can reuse the connection instead of leaking it.
+  let cancelled = 0
+  const first = authFail(401)
+  first.body = {
+    cancel: () => {
+      cancelled += 1
+      return Promise.resolve()
+    },
+  }
+  installFetchMock([first, ok()])
+  const state = makeState()
+
+  await createChatCompletions(payload, state)
+
+  expect(cancelled).toBe(1)
 })
 
 test("403 is treated the same as 401 (refresh + retry)", async () => {
