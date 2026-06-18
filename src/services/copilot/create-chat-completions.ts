@@ -64,16 +64,19 @@ export const createChatCompletions = async (
   // original single-attempt call did.
   if (!response.ok && AUTH_FAILURE_STATUSES.has(response.status)) {
     consola.warn(
-      `Copilot returned ${response.status}; refreshing token and retrying once`,
+      `Copilot returned ${response.status}; refreshing token before retrying`,
     )
     let refreshed = false
     try {
       await refreshCopilotToken(state)
       refreshed = true
     } catch (error) {
-      consola.error("Copilot token refresh failed:", error)
+      consola.error("Copilot token refresh failed; not retrying:", error)
     }
-    if (refreshed) response = await sendRequest()
+    if (refreshed) {
+      consola.warn("Token refreshed; retrying request once")
+      response = await sendRequest()
+    }
   }
 
   if (!response.ok) {

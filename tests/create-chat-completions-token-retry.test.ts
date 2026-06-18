@@ -48,6 +48,9 @@ const makeState = (overrides: Partial<State> = {}): State => ({
   manualApprove: false,
   rateLimitWait: false,
   showToken: false,
+  // refreshCopilotToken -> getCopilotToken -> githubHeaders reads githubToken,
+  // so set it here to keep the refresh path faithful to a real deployment.
+  githubToken: "gh-token",
   copilotToken: "stale-token",
   vsCodeVersion: "1.0.0",
   ...overrides,
@@ -196,4 +199,70 @@ test("a token refresh failure surfaces the original auth error without a wasted 
   // Refresh was attempted once; the original chat call is the only chat call.
   expect(callsTo(fetchMock, GITHUB_TOKEN_URL)).toHaveLength(1)
   expect(callsTo(fetchMock, CHAT_URL)).toHaveLength(1)
+})
+
+test("concurrent 401s share a single token refresh (no stampede on the GitHub endpoint)", async () => {
+  // After a host suspend/resume, many queued requests can all 401 at once. They
+  // must collapse onto ONE in-flight refresh rather than each hammering the
+  // GitHub token endpoint. We gate the token endpoint so both requests are past
+  // their first (401) chat call — and thus both inside the refresh path —
+  // before either refresh resolves, which is exactly when a naive
+  // implementation would fire two refreshes.
+  let tokenCalls = 0
+  let chatCalls = 0
+  let releaseToken!: () => void
+  const tokenGate = new Promise<void>((resolve) => {
+    releaseToken = resolve
+  })
+
+  const fetchMock = mock((url: string) => {
+    if (url === GITHUB_TOKEN_URL) {
+      tokenCalls += 1
+      return tokenGate.then(() => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(""),
+        json: () =>
+          Promise.resolve({
+            token: "fresh-token",
+            expires_at: 0,
+            refresh_in: 3600,
+          }),
+      })) as unknown as Promise<Response>
+    }
+    if (url === CHAT_URL) {
+      chatCalls += 1
+      // First call from each request 401s (stale token); the post-refresh
+      // retries succeed.
+      const is401 = chatCalls <= 2
+      return Promise.resolve({
+        ok: !is401,
+        status: is401 ? 401 : 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(""),
+        json: () =>
+          Promise.resolve({ id: "1", object: "chat.completion", choices: [] }),
+      } as unknown as Response)
+    }
+    throw new Error(`unexpected fetch url: ${url}`)
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  // Share one State so both requests dedupe on the same key.
+  const state = makeState()
+  const inflight = Promise.all([
+    createChatCompletions(payload, state),
+    createChatCompletions(payload, state),
+  ])
+  // Let both requests reach the gated refresh before releasing it.
+  await Promise.resolve()
+  releaseToken()
+  const [a, b] = await inflight
+
+  expect(a).toMatchObject({ object: "chat.completion" })
+  expect(b).toMatchObject({ object: "chat.completion" })
+  // The crux: two concurrent 401s triggered exactly ONE token refresh.
+  expect(tokenCalls).toBe(1)
 })

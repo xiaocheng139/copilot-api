@@ -16,24 +16,48 @@ const writeGithubToken = (token: string) =>
   fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
 
 /**
+ * Tracks an in-flight `refreshCopilotToken` per `State` so concurrent callers
+ * share a single GitHub token-endpoint request instead of stampeding it. Keyed
+ * on the State object (not a module global) to respect the injected-state seam.
+ * A WeakMap lets entries be collected with their State.
+ */
+const inFlightRefresh = new WeakMap<State, Promise<void>>()
+
+/**
  * Fetch a fresh Copilot token and write it into `state`, WITHOUT installing a
  * refresh timer. This is the in-process recovery primitive shared by the
  * startup/interval refresh (below) and the request-path 401/403 retry in
  * `createChatCompletions`: on the request path we must heal the expired token
  * without leaking a new `setInterval` on every retry.
+ *
+ * Concurrent calls for the same `state` are de-duped: the first call performs
+ * the fetch and every overlapping caller awaits that same promise. This matters
+ * for the request-path retry, where a host suspend/resume can make many queued
+ * requests 401 at once — without single-flight they would each hit the GitHub
+ * token endpoint and amplify the outage / rate limit.
  */
-export const refreshCopilotToken = async (
+export const refreshCopilotToken = (
   targetState: State = state,
 ): Promise<void> => {
-  // Bind the target to a const so the post-await assignment is to a member of a
-  // non-reassignable reference (satisfies require-atomic-updates, mirrors how
-  // the module-global `state` is written in setupCopilotToken).
-  const target = targetState
-  const { token } = await getCopilotToken(target)
-  target.copilotToken = token
-  if (target.showToken) {
-    consola.info("Refreshed Copilot token:", token)
-  }
+  const existing = inFlightRefresh.get(targetState)
+  if (existing) return existing
+
+  const refresh = (async () => {
+    // Bind the target to a const so the post-await assignment is to a member of
+    // a non-reassignable reference (satisfies require-atomic-updates, mirrors
+    // how the module-global `state` is written in setupCopilotToken).
+    const target = targetState
+    const { token } = await getCopilotToken(target)
+    target.copilotToken = token
+    if (target.showToken) {
+      consola.info("Refreshed Copilot token:", token)
+    }
+  })()
+
+  inFlightRefresh.set(targetState, refresh)
+  return refresh.finally(() => {
+    inFlightRefresh.delete(targetState)
+  })
 }
 
 export const setupCopilotToken = async () => {
