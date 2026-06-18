@@ -8,12 +8,33 @@ import { getGitHubUser } from "~/services/github/get-user"
 import { pollAccessToken } from "~/services/github/poll-access-token"
 
 import { HTTPError } from "./error"
-import { state } from "./state"
+import { state, type State } from "./state"
 
 const readGithubToken = () => fs.readFile(PATHS.GITHUB_TOKEN_PATH, "utf8")
 
 const writeGithubToken = (token: string) =>
   fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token)
+
+/**
+ * Fetch a fresh Copilot token and write it into `state`, WITHOUT installing a
+ * refresh timer. This is the in-process recovery primitive shared by the
+ * startup/interval refresh (below) and the request-path 401/403 retry in
+ * `createChatCompletions`: on the request path we must heal the expired token
+ * without leaking a new `setInterval` on every retry.
+ */
+export const refreshCopilotToken = async (
+  targetState: State = state,
+): Promise<void> => {
+  // Bind the target to a const so the post-await assignment is to a member of a
+  // non-reassignable reference (satisfies require-atomic-updates, mirrors how
+  // the module-global `state` is written in setupCopilotToken).
+  const target = targetState
+  const { token } = await getCopilotToken(target)
+  target.copilotToken = token
+  if (target.showToken) {
+    consola.info("Refreshed Copilot token:", token)
+  }
+}
 
 export const setupCopilotToken = async () => {
   const { token, refresh_in } = await getCopilotToken()
@@ -29,12 +50,8 @@ export const setupCopilotToken = async () => {
   setInterval(async () => {
     consola.debug("Refreshing Copilot token")
     try {
-      const { token } = await getCopilotToken()
-      state.copilotToken = token
+      await refreshCopilotToken()
       consola.debug("Copilot token refreshed")
-      if (state.showToken) {
-        consola.info("Refreshed Copilot token:", token)
-      }
     } catch (error) {
       consola.error("Failed to refresh Copilot token:", error)
       throw error
